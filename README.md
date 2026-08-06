@@ -34,13 +34,16 @@ durable queue; WebSockets are hints and REST remains authoritative.
 
 `context/quote-analysis.md` is compiled into the binary as the stable policy.
 Each job also loads the active version of `QUOTE_CONTEXT_KEY` from
-`canonical_context`. The prompt labels customer JSON as untrusted data and the
-model response must pass strict schema, size, range, and line-item-total checks
-before it becomes a quote.
+`canonical_context`. The default key is `quote-analysis`, matching
+`canonical-web-server.rs`; deployment configuration and the seeded database row
+must keep that value aligned. The prompt labels customer JSON as untrusted data,
+and the model response must pass strict schema, size, range, and line-item-total
+checks before it becomes a quote.
 
-The deployment must set both `GEMINI_API_KEY` and `GEMINI_MODEL`. The model id is
-configuration rather than source because approved Pro aliases and preview
-lifecycles change. The API key is sent only in the server-side
+The deployment must set `GEMINI_API_KEY`. `GEMINI_MODEL` defaults to
+`gemini-3.6-pro` and remains an explicit override for an approved deployment.
+Production activation must first prove the exact selected model is enabled for
+the Google project and region. The API key is sent only in the server-side
 `x-goog-api-key` header.
 
 Seed a database context after applying the schema, for example:
@@ -49,7 +52,7 @@ Seed a database context after applying the schema, for example:
 INSERT INTO canonical_context
   (id, context_key, version, markdown, metadata, active)
 VALUES
-  ('00000000-0000-4000-8000-000000000001', 'quote_analysis', 1,
+  ('00000000-0000-4000-8000-000000000001', 'quote-analysis', 1,
    '# Pricing context\n\nDescribe current rate cards, delivery constraints, and exclusions.',
    '{"owner":"sales-operations"}'::jsonb, true);
 ```
