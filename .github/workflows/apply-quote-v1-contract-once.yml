@@ -73,6 +73,22 @@ jobs:
               raise SystemExit('expected at least three stale serde field attributes')
           source = source[:start] + block + source[end:]
           source = source.replace('    #[serde(skip_serializing)]\n    pub owner_subject:', '    pub owner_subject:', 1)
+          source = source.replace(
+              '        build_router, AppState, CreateQuoteRequest, APPLICATION_CONTEXT_MARKDOWN,\n',
+              '        build_router, AppState,\n',
+              1,
+          )
+          old = '''        let quotes = body.as_array().unwrap();
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes["quotes"][0]["organizationName"], "Example Incorporated");
+'''
+          new = '''        let quotes = body["quotes"].as_array().unwrap();
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0]["organizationName"], "Example Incorporated");
+'''
+          if old not in source:
+              raise SystemExit('owner-scoped list assertion not found')
+          source = source.replace(old, new, 1)
           lib.write_text(source)
 
           wire = Path('src/wire.rs')
