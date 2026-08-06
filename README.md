@@ -1,68 +1,40 @@
-# canonical-api-server.rs
+# Canonical quote API
 
-Rust REST and WebSocket boundary for `https://api.canonical.plus`.
-`https://app.canonical.plus` remains owned by `canonical-web-server.rs`; the
-browser-facing server calls this API rather than sharing its database identity.
-
-## Package direction
-
-```text
-canonical-interfaces → canonical-lib → canonical-api-server.rs
-```
-
-The Zed dependency graph is declared in `.zpkg.toml`. Generated transport
-contracts stay in `canonical-interfaces`; quote validation and context assembly
-stay in `canonical-lib`; this repository owns HTTP, WebSocket, persistence, and
-model-provider orchestration.
-
-## Current foundation
-
-- Axum routes for health, quote submission, owner-scoped lookup, and quote event
-  WebSockets;
-- a required trusted-proxy token plus authenticated-subject projection, so the
-  service cannot start in an accidentally anonymous mode;
-- SeaORM/PostgreSQL connection plumbing;
-- bounded Markdown/context-record identifiers for later owner-scoped loading
-  from the `canonical_context` table;
-- a configurable Gemini model, defaulting to `gemini-3.6-pro`;
-- in-memory quote state only, deliberately labelled `memory-only` until the
-  reviewed migration and repository layer land.
-
-The trusted-proxy headers are an initial internal boundary, not the final
-internet-facing authentication design. Before production, the API must verify
-shared-auth JWTs or a sealed introspection response itself, Cloudflare must
-strip client-supplied internal headers, and the database repository must enforce
-owner/tenant predicates on every query.
+Axum and SeaORM service for authenticated Canonical quote analysis. It combines a versioned Markdown playbook with the active `canonical_context` PostgreSQL record, requests structured analysis from Gemini, persists the result, and broadcasts owner-scoped status events over WebSockets.
 
 ## Routes
 
 | Route | Purpose |
 | --- | --- |
-| `GET /healthz` | Liveness and configuration visibility without secrets |
-| `POST /v1/quotes` | Validate and queue a quote request |
-| `GET /v1/quotes/{quote_id}` | Owner-scoped quote status |
-| `GET /v1/quotes/{quote_id}/events` | Authenticated WebSocket status stream |
+| `GET /healthz` | Process health |
+| `GET /readyz` | PostgreSQL readiness |
+| `POST /v1/quotes` | Validate, analyze, and save a quote |
+| `GET /v1/quotes` | List the signed-in user's quotes |
+| `GET /v1/quotes/{id}` | Read one owned quote |
+| `GET /ws/quotes` | Owner-scoped quote status events |
 
-## Develop
+The API is not directly internet-trusted. The Canonical Cloudflare Worker removes incoming identity headers, verifies the user's shared-auth JWT, and adds a short-lived HMAC assertion. The API verifies that assertion over the exact method and path before serving protected routes.
+
+## Configuration
+
+Required environment variables:
+
+- `DATABASE_URL`
+- `GEMINI_API_KEY`
+- `ORIGIN_ASSERTION_SECRET` (at least 32 bytes and identical to the Worker secret)
+
+Optional variables:
+
+- `BIND_ADDR` (default `0.0.0.0:8081`)
+- `GEMINI_MODEL` (default `gemini-3.1-pro-preview`)
+- `QUOTE_CONTEXT_MARKDOWN_PATH` (default `context/quote-analysis.md`)
+- `ORIGIN_ASSERTION_MAX_AGE_SECONDS` (default `60`)
+
+Apply [`db/schema.sql`](db/schema.sql) to the Canonical Supabase/PostgreSQL database before deploying. Kubernetes resources are in [`deploy/k8s/all.yaml`](deploy/k8s/all.yaml); replace the image digest and provide the referenced ExternalSecret values through the cluster secret store.
+
+## Local verification
 
 ```sh
-cp .env.example .env
-set -a; source .env; set +a
-cargo fmt --all -- --check
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo run
+cargo fmt -- --check
+cargo test --offline
 ```
-
-## Production gates
-
-1. add SeaORM entities/migrations for quote requests, context snapshots, model
-   attempts, and append-only status events;
-2. load the Markdown context file by reviewed digest and combine it with exactly
-   one owner-scoped PostgreSQL context record through `canonical-lib`;
-3. call Gemini through a timeout/retry/circuit-breaker boundary without logging
-   prompts or regulated content;
-4. replace the temporary trusted-proxy identity projection with shared-auth JWT
-   verification and revocation/introspection handling;
-5. certify REST/WebSocket owner isolation, CSRF rejection, revocation, model
-   failure handling, and restart recovery in Kubernetes.
