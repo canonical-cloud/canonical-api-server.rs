@@ -1,246 +1,879 @@
-mod auth;
-mod config;
-// `quote` imports `SinkExt` for compatibility with alternate WebSocket sink implementations;
-// Axum 0.8 exposes an inherent `send` method, so the pinned toolchain sees it as unused.
-#[allow(unused_imports)]
-mod quote;
+#![forbid(unsafe_code)]
 
-use std::{sync::Arc, time::Duration};
+mod gemini;
+mod persistence;
 
-use anyhow::Context;
-use axum::{
-    extract::{DefaultBodyLimit, State},
-    http::{header, HeaderName, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    routing::get,
-    Json, Router,
-};
-use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, DbErr,
-    Statement,
-};
-use serde_json::json;
-use thiserror::Error;
-use tokio::sync::{broadcast, Semaphore};
-use tower_http::{
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    sensitive_headers::SetSensitiveRequestHeadersLayer,
-    set_header::SetResponseHeaderLayer,
-    trace::TraceLayer,
-};
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
 
-pub use config::Config;
-pub(crate) use quote::QuoteEvent;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, HeaderName, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use futures_util::StreamExt;
+use sea_orm::DatabaseConnection;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as JsonValue};
+use subtle::ConstantTimeEq;
+use tokio::sync::{broadcast, RwLock};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::TraceLayer;
+use tracing::{error, warn};
+use uuid::Uuid;
 
-pub const SERVICE_NAME: &str = "canonical-api-server";
+pub use gemini::{GeminiBuildError, GeminiClient};
+
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";
+const INTERNAL_TOKEN_HEADER: &str = "x-canonical-internal-token";
+const SUBJECT_HEADER: &str = "x-canonical-subject";
+const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
+const MAX_NOTES_BYTES: usize = 32_768;
+const MAX_CONTEXT_RECORD_BYTES: usize = 262_144;
+const ALLOWED_FRAMEWORKS: &[&str] = &[
+    "fedramp",
+    "gdpr",
+    "hipaa",
+    "iso-27001",
+    "nist-800-53",
+    "nist-csf",
+    "pci-dss",
+    "soc2",
+];
+
+#[derive(Clone)]
+pub struct Config {
+    pub bind_address: String,
+    pub database_url: Option<String>,
+    pub gemini_api_key: Option<String>,
+    pub gemini_model: String,
+    pub internal_auth_token: String,
+}
+
+impl Config {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let internal_auth_token = env::var("CANONICAL_INTERNAL_AUTH_TOKEN")
+            .map_err(|_| ConfigError::MissingInternalAuthToken)?;
+        if internal_auth_token.trim().len() < 32 {
+            return Err(ConfigError::WeakInternalAuthToken);
+        }
+
+        let gemini_api_key = env::var("GEMINI_API_KEY").ok();
+        if gemini_api_key
+            .as_deref()
+            .is_some_and(|key| key.trim().len() < 20)
+        {
+            return Err(ConfigError::WeakGeminiApiKey);
+        }
+
+        let gemini_model = env::var("GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.into());
+        if !is_valid_model_name(&gemini_model) {
+            return Err(ConfigError::InvalidGeminiModel);
+        }
+
+        Ok(Self {
+            bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            database_url: env::var("DATABASE_URL").ok(),
+            gemini_api_key,
+            gemini_model,
+            internal_auth_token,
+        })
+    }
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Config")
+            .field("bind_address", &self.bind_address)
+            .field(
+                "database_url",
+                &self.database_url.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "gemini_api_key",
+                &self.gemini_api_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field("gemini_model", &self.gemini_model)
+            .field("internal_auth_token", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigError {
+    InvalidGeminiModel,
+    MissingInternalAuthToken,
+    WeakGeminiApiKey,
+    WeakInternalAuthToken,
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidGeminiModel => formatter.write_str(
+                "GEMINI_MODEL must contain only ASCII letters, digits, '.', '-', or '_'",
+            ),
+            Self::MissingInternalAuthToken => {
+                formatter.write_str("CANONICAL_INTERNAL_AUTH_TOKEN is required")
+            }
+            Self::WeakGeminiApiKey => {
+                formatter.write_str("GEMINI_API_KEY is present but is unexpectedly short")
+            }
+            Self::WeakInternalAuthToken => formatter.write_str(
+                "CANONICAL_INTERNAL_AUTH_TOKEN must contain at least 32 non-whitespace bytes",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+fn is_valid_model_name(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 128
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
 
 #[derive(Clone)]
 pub struct AppState {
-    pub(crate) config: Arc<Config>,
-    pub(crate) db: DatabaseConnection,
-    pub(crate) http: reqwest::Client,
-    pub(crate) events: broadcast::Sender<QuoteEvent>,
-    pub(crate) websocket_capacity: Arc<Semaphore>,
+    database: Option<DatabaseConnection>,
+    events: broadcast::Sender<QuoteEvent>,
+    gemini: Option<GeminiClient>,
+    gemini_model: Arc<str>,
+    internal_auth_token: Arc<str>,
+    quotes: Arc<RwLock<HashMap<Uuid, QuoteRecord>>>,
 }
 
-#[derive(Debug, Error)]
-pub enum ApiError {
-    #[error("authentication required")]
-    Unauthorized,
-    #[error("request is forbidden")]
-    Forbidden,
-    #[error("invalid request: {0}")]
-    BadRequest(String),
-    #[error("resource not found")]
-    NotFound,
-    #[error("server capacity is temporarily exhausted")]
-    Busy,
-    #[error("database error")]
-    Database(#[from] DbErr),
-    #[error("upstream service is unavailable")]
-    Upstream,
-    #[error("serialization failed")]
-    Serialization(#[from] serde_json::Error),
+impl AppState {
+    #[must_use]
+    pub fn new(
+        internal_auth_token: impl Into<Arc<str>>,
+        gemini_model: impl Into<Arc<str>>,
+        database: Option<DatabaseConnection>,
+    ) -> Self {
+        let (events, _) = broadcast::channel(256);
+        Self {
+            database,
+            events,
+            gemini: None,
+            gemini_model: gemini_model.into(),
+            internal_auth_token: internal_auth_token.into(),
+            quotes: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    #[must_use]
+    pub fn with_gemini(mut self, gemini: GeminiClient) -> Self {
+        self.gemini = Some(gemini);
+        self
+    }
+}
+
+pub fn build_router(state: AppState) -> Router {
+    let request_id_header = HeaderName::from_static("x-request-id");
+    Router::new()
+        .route("/healthz", get(health))
+        .route("/v1/quotes", post(create_quote))
+        .route("/v1/quotes/{quote_id}", get(get_quote))
+        .route("/v1/quotes/{quote_id}/events", get(quote_events))
+        .with_state(state)
+        .layer(SetSensitiveRequestHeadersLayer::new([
+            axum::http::header::AUTHORIZATION,
+            HeaderName::from_static(INTERNAL_TOKEN_HEADER),
+        ]))
+        .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+        .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(90),
+        ))
+        .layer(TraceLayer::new_for_http())
+}
+
+async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        database_configured: state.database.is_some(),
+        gemini_configured: state.gemini.is_some(),
+        gemini_model: state.gemini_model.to_string(),
+        service: "canonical-api-server",
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+    })
+}
+
+async fn create_quote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateQuoteRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let request = request.validate_and_normalize()?;
+
+    let quote_id = Uuid::new_v4();
+    let mut record = QuoteRecord {
+        analysis: None,
+        context_record_id: request.context_record_id,
+        error_code: None,
+        frameworks: request.frameworks.clone(),
+        gemini_model: state.gemini_model.to_string(),
+        organization_name: request.organization.legal_name.clone(),
+        owner_subject: subject.clone(),
+        persistence: if state.database.is_some() {
+            "postgres".into()
+        } else {
+            "memory-only".into()
+        },
+        quote_id,
+        status: "queued".into(),
+    };
+
+    let context = match state.database.as_ref() {
+        Some(database) => persistence::create_quote(database, &subject, &request, &record)
+            .await
+            .map_err(map_store_error)?,
+        None => CanonicalContext::request_only(request.context_record_id),
+    };
+
+    state.quotes.write().await.insert(quote_id, record.clone());
+    publish_event(&state, &record);
+
+    let worker_state = state.clone();
+    let worker_record = record.clone();
+    tokio::spawn(async move {
+        run_quote_analysis(worker_state, worker_record, request, context).await;
+    });
+
+    Ok((StatusCode::ACCEPTED, Json(record)))
+}
+
+async fn run_quote_analysis(
+    state: AppState,
+    mut record: QuoteRecord,
+    request: CreateQuoteRequest,
+    context: CanonicalContext,
+) {
+    record.status = "analyzing".into();
+    record.error_code = None;
+    record.analysis = None;
+    update_quote_state(&state, &record).await;
+
+    let Some(gemini) = state.gemini.as_ref() else {
+        record.status = "failed".into();
+        record.error_code = Some("gemini_not_configured".into());
+        update_quote_state(&state, &record).await;
+        return;
+    };
+
+    let attempt_id = match state.database.as_ref() {
+        Some(database) => match persistence::start_model_attempt(database, &record).await {
+            Ok(attempt_id) => Some(attempt_id),
+            Err(error) => {
+                error!(
+                    quote_id = %record.quote_id,
+                    error_code = error.code(),
+                    "failed to persist Gemini attempt start"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    match gemini.analyze(&request, &context).await {
+        Ok(analysis) => {
+            record.status = "completed".into();
+            record.analysis = Some(analysis);
+            record.error_code = None;
+        }
+        Err(error) => {
+            warn!(
+                quote_id = %record.quote_id,
+                error_code = error.code(),
+                "Gemini quote analysis failed"
+            );
+            record.status = "failed".into();
+            record.analysis = None;
+            record.error_code = Some(error.code().into());
+        }
+    }
+
+    update_quote_state(&state, &record).await;
+
+    if let (Some(database), Some(attempt_id)) = (state.database.as_ref(), attempt_id) {
+        if let Err(error) = persistence::finish_model_attempt(database, &record, attempt_id).await {
+            error!(
+                quote_id = %record.quote_id,
+                error_code = error.code(),
+                "failed to persist Gemini attempt completion"
+            );
+        }
+    }
+}
+
+async fn update_quote_state(state: &AppState, record: &QuoteRecord) {
+    state
+        .quotes
+        .write()
+        .await
+        .insert(record.quote_id, record.clone());
+
+    if let Some(database) = state.database.as_ref() {
+        if let Err(error) = persistence::update_quote(database, record).await {
+            error!(
+                quote_id = %record.quote_id,
+                error = %error,
+                "failed to persist quote status"
+            );
+        }
+    }
+
+    publish_event(state, record);
+}
+
+fn publish_event(state: &AppState, record: &QuoteRecord) {
+    let _ = state.events.send(QuoteEvent {
+        analysis_available: record.analysis.is_some(),
+        error_code: record.error_code.clone(),
+        owner_subject: record.owner_subject.clone(),
+        quote_id: record.quote_id,
+        status: record.status.clone(),
+    });
+}
+
+async fn get_quote(
+    State(state): State<AppState>,
+    Path(quote_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<QuoteRecord>, ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let record = find_quote(&state, quote_id, &subject).await?;
+    Ok(Json(record))
+}
+
+async fn find_quote(
+    state: &AppState,
+    quote_id: Uuid,
+    subject: &str,
+) -> Result<QuoteRecord, ApiError> {
+    if let Some(record) = state.quotes.read().await.get(&quote_id).cloned() {
+        if record.owner_subject == subject {
+            return Ok(record);
+        }
+        return Err(ApiError::not_found(
+            "quote_not_found",
+            "quote was not found",
+        ));
+    }
+
+    let Some(database) = state.database.as_ref() else {
+        return Err(ApiError::not_found(
+            "quote_not_found",
+            "quote was not found",
+        ));
+    };
+
+    let record = persistence::get_quote(database, subject, quote_id)
+        .await
+        .map_err(map_store_error)?;
+    state.quotes.write().await.insert(quote_id, record.clone());
+    Ok(record)
+}
+
+async fn quote_events(
+    State(state): State<AppState>,
+    Path(quote_id): Path<Uuid>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    find_quote(&state, quote_id, &subject).await?;
+
+    Ok(upgrade.on_upgrade(move |socket| stream_quote_events(socket, state, quote_id, subject)))
+}
+
+async fn stream_quote_events(
+    mut socket: WebSocket,
+    state: AppState,
+    quote_id: Uuid,
+    owner_subject: String,
+) {
+    let mut events = state.events.subscribe();
+    if let Ok(record) = find_quote(&state, quote_id, &owner_subject).await {
+        if send_json(&mut socket, &record).await.is_err() {
+            return;
+        }
+    }
+
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                match event {
+                    Ok(event) if event.quote_id == quote_id
+                        && event.owner_subject == owner_subject =>
+                    {
+                        if send_json(&mut socket, &event).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                }
+            }
+        }
+    }
+}
+
+async fn send_json<T: Serialize>(socket: &mut WebSocket, value: &T) -> Result<(), ()> {
+    let payload = serde_json::to_string(value).map_err(|_| ())?;
+    socket
+        .send(Message::Text(payload.into()))
+        .await
+        .map_err(|_| ())
+}
+
+fn authenticate(headers: &HeaderMap, expected_token: &str) -> Result<String, ApiError> {
+    let supplied_token = headers
+        .get(INTERNAL_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let token_is_valid = supplied_token
+        .map(|token| bool::from(token.as_bytes().ct_eq(expected_token.as_bytes())))
+        .unwrap_or(false);
+    if !token_is_valid {
+        return Err(ApiError::unauthorized(
+            "invalid_internal_auth",
+            "trusted proxy authentication failed",
+        ));
+    }
+
+    let subject = headers
+        .get(SUBJECT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 255
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
+        })
+        .ok_or_else(|| {
+            ApiError::unauthorized("missing_subject", "authenticated subject is required")
+        })?;
+    Ok(subject.to_owned())
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateQuoteRequest {
+    pub context_record_id: Uuid,
+    pub frameworks: Vec<String>,
+    pub markdown_context: String,
+    pub notes: Option<String>,
+    pub organization: OrganizationInput,
+    pub target_date: Option<String>,
+}
+
+impl CreateQuoteRequest {
+    fn validate_and_normalize(mut self) -> Result<Self, ApiError> {
+        self.organization.validate()?;
+
+        if self.frameworks.is_empty() || self.frameworks.len() > 16 {
+            return Err(ApiError::bad_request(
+                "invalid_frameworks",
+                "between 1 and 16 frameworks are required",
+            ));
+        }
+
+        let mut seen = HashSet::new();
+        let mut normalized = Vec::with_capacity(self.frameworks.len());
+        for framework in self.frameworks {
+            let framework = framework.trim().to_ascii_lowercase();
+            if !ALLOWED_FRAMEWORKS.contains(&framework.as_str()) {
+                return Err(ApiError::bad_request(
+                    "unsupported_framework",
+                    "one or more requested frameworks are unsupported",
+                ));
+            }
+            if seen.insert(framework.clone()) {
+                normalized.push(framework);
+            }
+        }
+        self.frameworks = normalized;
+
+        let markdown = self.markdown_context.trim();
+        if markdown.is_empty() || markdown.len() > MAX_MARKDOWN_CONTEXT_BYTES {
+            return Err(ApiError::bad_request(
+                "invalid_markdown_context",
+                "markdown_context must contain 1 to 262144 bytes",
+            ));
+        }
+        self.markdown_context = markdown.to_owned();
+
+        if self
+            .notes
+            .as_deref()
+            .is_some_and(|notes| notes.len() > MAX_NOTES_BYTES)
+        {
+            return Err(ApiError::bad_request(
+                "notes_too_large",
+                "notes must not exceed 32768 bytes",
+            ));
+        }
+        self.notes = self
+            .notes
+            .take()
+            .map(|notes| notes.trim().to_owned())
+            .filter(|notes| !notes.is_empty());
+
+        if self
+            .target_date
+            .as_deref()
+            .is_some_and(|value| value.len() > 32 || !is_iso_date(value))
+        {
+            return Err(ApiError::bad_request(
+                "invalid_target_date",
+                "target_date must use YYYY-MM-DD",
+            ));
+        }
+
+        Ok(self)
+    }
+}
+
+fn is_iso_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrganizationInput {
+    pub employee_count: u32,
+    pub industry: String,
+    pub legal_name: String,
+}
+
+impl OrganizationInput {
+    fn validate(&mut self) -> Result<(), ApiError> {
+        self.legal_name = self.legal_name.trim().to_owned();
+        if self.legal_name.is_empty() || self.legal_name.len() > 200 {
+            return Err(ApiError::bad_request(
+                "invalid_organization",
+                "organization.legal_name must contain 1 to 200 bytes",
+            ));
+        }
+        if self.employee_count == 0 || self.employee_count > 10_000_000 {
+            return Err(ApiError::bad_request(
+                "invalid_employee_count",
+                "organization.employee_count must be between 1 and 10000000",
+            ));
+        }
+
+        self.industry = self.industry.trim().to_owned();
+        if self.industry.is_empty() || self.industry.len() > 120 {
+            return Err(ApiError::bad_request(
+                "invalid_industry",
+                "organization.industry must contain 1 to 120 bytes",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CanonicalContext {
+    pub context_json: JsonValue,
+    pub context_markdown: String,
+    pub id: Uuid,
+    pub name: String,
+}
+
+impl CanonicalContext {
+    fn request_only(id: Uuid) -> Self {
+        Self {
+            context_json: json!({}),
+            context_markdown: String::new(),
+            id,
+            name: "request-only context".into(),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.name.is_empty() || self.name.len() > 200 {
+            return Err("canonical_context.name is invalid");
+        }
+        if self.context_markdown.len() > MAX_CONTEXT_RECORD_BYTES {
+            return Err("canonical_context.context_markdown is too large");
+        }
+        let json_size = serde_json::to_vec(&self.context_json)
+            .map_err(|_| "canonical_context.context_json is invalid")?
+            .len();
+        if json_size > MAX_CONTEXT_RECORD_BYTES {
+            return Err("canonical_context.context_json is too large");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct QuoteRecord {
+    pub analysis: Option<JsonValue>,
+    pub context_record_id: Uuid,
+    pub error_code: Option<String>,
+    pub frameworks: Vec<String>,
+    pub gemini_model: String,
+    pub organization_name: String,
+    #[serde(skip_serializing)]
+    pub owner_subject: String,
+    pub persistence: String,
+    pub quote_id: Uuid,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct QuoteEvent {
+    analysis_available: bool,
+    error_code: Option<String>,
+    #[serde(skip_serializing)]
+    owner_subject: String,
+    quote_id: Uuid,
+    status: String,
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    database_configured: bool,
+    gemini_configured: bool,
+    gemini_model: String,
+    service: &'static str,
+    status: &'static str,
+    version: &'static str,
+}
+
+fn map_store_error(error: persistence::StoreError) -> ApiError {
+    match error {
+        persistence::StoreError::ContextNotFound => ApiError::not_found(
+            "context_not_found",
+            "the requested canonical context record was not found",
+        ),
+        persistence::StoreError::QuoteNotFound => {
+            ApiError::not_found("quote_not_found", "quote was not found")
+        }
+        persistence::StoreError::Database(_) | persistence::StoreError::InvalidRecord(_) => {
+            error!(
+                error_code = error.code(),
+                "quote persistence operation failed"
+            );
+            ApiError::service_unavailable(
+                "storage_unavailable",
+                "quote storage is temporarily unavailable",
+            )
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    code: &'static str,
+    message: &'static str,
+}
+
+#[derive(Debug)]
+struct ApiError {
+    body: ErrorBody,
+    status: StatusCode,
+}
+
+impl ApiError {
+    const fn bad_request(code: &'static str, message: &'static str) -> Self {
+        Self {
+            body: ErrorBody { code, message },
+            status: StatusCode::BAD_REQUEST,
+        }
+    }
+
+    const fn not_found(code: &'static str, message: &'static str) -> Self {
+        Self {
+            body: ErrorBody { code, message },
+            status: StatusCode::NOT_FOUND,
+        }
+    }
+
+    const fn service_unavailable(code: &'static str, message: &'static str) -> Self {
+        Self {
+            body: ErrorBody { code, message },
+            status: StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+
+    const fn unauthorized(code: &'static str, message: &'static str) -> Self {
+        Self {
+            body: ErrorBody { code, message },
+            status: StatusCode::UNAUTHORIZED,
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            Self::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "authentication required",
-            ),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden", "request is forbidden"),
-            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, "bad_request", message.as_str()),
-            Self::NotFound => (StatusCode::NOT_FOUND, "not_found", "resource not found"),
-            Self::Busy => (
-                StatusCode::TOO_MANY_REQUESTS,
-                "capacity_exhausted",
-                "server capacity is temporarily exhausted",
-            ),
-            Self::Upstream => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "upstream_unavailable",
-                "an upstream service is temporarily unavailable",
-            ),
-            Self::Database(_) | Self::Serialization(_) => {
-                tracing::error!(error = %self, "request failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error",
-                    "the server could not complete the request",
-                )
-            }
-        };
-        (
-            status,
-            Json(json!({ "error": { "code": code, "message": message } })),
-        )
-            .into_response()
+        (self.status, Json(self.body)).into_response()
     }
 }
 
-pub async fn run() -> anyhow::Result<()> {
-    init_tracing();
-    match std::env::args().nth(1).as_deref() {
-        None | Some("serve") => serve().await,
-        Some("migrate") => migrate().await,
-        Some(other) => anyhow::bail!("unknown command {other:?}; expected serve or migrate"),
+#[cfg(test)]
+mod tests {
+    use super::{build_router, AppState, DEFAULT_GEMINI_MODEL};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+    fn app() -> axum::Router {
+        build_router(AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None))
     }
-}
 
-async fn serve() -> anyhow::Result<()> {
-    let config = Config::from_env().context("loading configuration")?;
-    let db = connect_database(&config.database_url, config.database_max_connections)
-        .await
-        .context("connecting runtime database")?;
-    db.query_one_raw(Statement::from_string(
-        DatabaseBackend::Postgres,
-        "SELECT 1 AS ready",
-    ))
-    .await
-    .context("checking runtime database")?;
-
-    let http = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(45))
-        .user_agent("canonical-api-server/0.1")
-        .build()
-        .context("building outbound HTTP client")?;
-    let (events, _) = broadcast::channel(512);
-    let state = AppState {
-        websocket_capacity: Arc::new(Semaphore::new(config.websocket_max_connections)),
-        config: Arc::new(config),
-        db,
-        http,
-        events,
-    };
-    let _workers = quote::spawn_workers(state.clone());
-
-    let request_id = HeaderName::from_static("x-request-id");
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .merge(quote::router())
-        .with_state(state.clone())
-        .layer(DefaultBodyLimit::max(64 * 1024))
-        .layer(SetSensitiveRequestHeadersLayer::new([
-            header::AUTHORIZATION,
-            HeaderName::from_static("x-canonical-service-token"),
-        ]))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store"),
-        ))
-        .layer(PropagateRequestIdLayer::new(request_id.clone()))
-        .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
-        .layer(TraceLayer::new_for_http());
-
-    let bind = format!("0.0.0.0:{}", state.config.port);
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .with_context(|| format!("binding {bind}"))?;
-    tracing::info!(
-        bind,
-        model = %state.config.gemini_model,
-        workers = state.config.worker_concurrency,
-        "canonical API listening"
-    );
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("HTTP server failed")
-}
-
-async fn migrate() -> anyhow::Result<()> {
-    let database_url = std::env::var("MIGRATION_DATABASE_URL")
-        .context("MIGRATION_DATABASE_URL is required for migrate")?;
-    let db = connect_database(&database_url, 2)
-        .await
-        .context("connecting migration database")?;
-    db.execute_unprepared(include_str!("../db/schema.sql"))
-        .await
-        .context("applying quote schema")?;
-    tracing::info!("canonical API schema applied");
-    Ok(())
-}
-
-async fn connect_database(url: &str, max_connections: u32) -> Result<DatabaseConnection, DbErr> {
-    let mut options = ConnectOptions::new(url.to_owned());
-    options
-        .max_connections(max_connections)
-        .min_connections(1)
-        .connect_timeout(Duration::from_secs(5))
-        .acquire_timeout(Duration::from_secs(5))
-        .idle_timeout(Duration::from_secs(300))
-        .sqlx_logging(false);
-    Database::connect(options).await
-}
-
-async fn healthz() -> StatusCode {
-    StatusCode::NO_CONTENT
-}
-
-async fn readyz(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
-    state
-        .db
-        .query_one_raw(Statement::from_string(
-            DatabaseBackend::Postgres,
-            "SELECT 1 AS ready",
-        ))
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            signal.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
+    #[test]
+    fn default_model_tracks_the_current_pro_preview() {
+        assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.1-pro-preview");
     }
-    tracing::info!("shutdown signal received");
-}
 
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .json()
-        .try_init();
+    #[tokio::test]
+    async fn health_is_public_and_reports_configuration_state() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["database_configured"], false);
+        assert_eq!(body["gemini_configured"], false);
+        assert_eq!(body["gemini_model"], DEFAULT_GEMINI_MODEL);
+    }
+
+    #[tokio::test]
+    async fn quote_creation_requires_trusted_proxy_headers() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/quotes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(valid_payload().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authenticated_owner_can_create_and_read_a_quote() {
+        let app = app();
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::from(valid_payload().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::ACCEPTED);
+        let body: Value =
+            serde_json::from_slice(&create.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let quote_id = body["quote_id"].as_str().unwrap();
+        Uuid::parse_str(quote_id).unwrap();
+
+        let read = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/quotes/{quote_id}"))
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn unsupported_frameworks_are_rejected() {
+        let mut payload = valid_payload();
+        payload["frameworks"] = json!(["made-up-framework"]);
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn valid_payload() -> Value {
+        json!({
+            "context_record_id": Uuid::new_v4(),
+            "frameworks": ["soc2", "hipaa"],
+            "markdown_context": "# Product\nA hosted control plane.",
+            "notes": "Initial estimate",
+            "organization": {
+                "employee_count": 42,
+                "industry": "Software",
+                "legal_name": "Example Incorporated"
+            },
+            "target_date": "2027-01-15"
+        })
+    }
 }
