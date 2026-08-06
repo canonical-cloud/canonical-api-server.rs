@@ -80,8 +80,8 @@ impl Config {
         {
             anyhow::bail!("GEMINI_MODEL must be a simple model identifier");
         }
-        let quote_context_key = env::var("QUOTE_CONTEXT_KEY")
-            .unwrap_or_else(|_| DEFAULT_QUOTE_CONTEXT_KEY.to_owned());
+        let quote_context_key =
+            env::var("QUOTE_CONTEXT_KEY").unwrap_or_else(|_| DEFAULT_QUOTE_CONTEXT_KEY.to_owned());
         if quote_context_key.is_empty()
             || quote_context_key.len() > 128
             || !quote_context_key.bytes().all(|byte| {
