@@ -26,6 +26,7 @@ const MAX_GEMINI_RESPONSE_BYTES: usize = 256 * 1024;
 const ALLOWED_FRAMEWORKS: &[&str] = &[
     "soc2",
     "nist_csf",
+    "nist_800_53",
     "hipaa",
     "iso_27001",
     "pci_dss",
@@ -63,6 +64,7 @@ pub(crate) struct QuoteEvent {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateQuoteRequest {
     company_name: String,
+    industry: String,
     employee_count: u32,
     annual_revenue_usd: Option<u64>,
     frameworks: Vec<String>,
@@ -81,6 +83,12 @@ impl CreateQuoteRequest {
         if self.company_name.is_empty() || self.company_name.len() > 200 {
             return Err(ApiError::BadRequest(
                 "companyName must contain 1-200 characters".into(),
+            ));
+        }
+        self.industry = self.industry.trim().to_owned();
+        if self.industry.is_empty() || self.industry.len() > 120 {
+            return Err(ApiError::BadRequest(
+                "industry must contain 1-120 characters".into(),
             ));
         }
         if !(1..=1_000_000).contains(&self.employee_count) {
