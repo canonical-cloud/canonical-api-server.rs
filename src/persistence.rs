@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, DbErr, QueryResult,
     Statement, TransactionTrait,
@@ -58,8 +59,8 @@ pub async fn create_quote(
     let context = context_from_row(&row)?;
     context.validate().map_err(StoreError::InvalidRecord)?;
 
-    let request_json =
-        serde_json::to_value(request).map_err(|_| StoreError::InvalidRecord("quote request"))?;
+    let request_json = serde_json::to_value(&request.wire)
+        .map_err(|_| StoreError::InvalidRecord("quote request"))?;
     transaction
         .execute_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
@@ -116,7 +117,9 @@ pub async fn get_quote(
                 gemini_model,
                 status,
                 analysis_json,
-                error_code
+                error_code,
+                created_at,
+                updated_at
             FROM canonical_quote
             WHERE id = $1
               AND owner_subject = $2
@@ -152,7 +155,9 @@ pub async fn list_quotes(
                 gemini_model,
                 status,
                 analysis_json,
-                error_code
+                error_code,
+                created_at,
+                updated_at
             FROM canonical_quote
             WHERE owner_subject = $1
             ORDER BY created_at DESC
@@ -245,7 +250,7 @@ pub async fn finish_model_attempt(
     record: &QuoteRecord,
     attempt_id: Uuid,
 ) -> Result<(), StoreError> {
-    let attempt_status = if record.status == "completed" {
+    let attempt_status = if record.status == "ready" {
         "completed"
     } else {
         "failed"
@@ -340,6 +345,26 @@ async fn insert_event(
     Ok(())
 }
 
+pub async fn get_context(
+    database: &DatabaseConnection,
+    subject: &str,
+    context_id: Uuid,
+) -> Result<CanonicalContext, StoreError> {
+    let transaction = begin_subject_transaction(database, subject).await?;
+    let row = transaction
+        .query_one_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Postgres,
+            "SELECT id, name, context_markdown, context_json FROM canonical_context WHERE id = $1 AND owner_subject = $2 AND active = TRUE",
+            [context_id.into(), subject.to_owned().into()],
+        ))
+        .await?
+        .ok_or(StoreError::ContextNotFound)?;
+    let context = context_from_row(&row)?;
+    context.validate().map_err(StoreError::InvalidRecord)?;
+    transaction.commit().await?;
+    Ok(context)
+}
+
 fn context_from_row(row: &QueryResult) -> Result<CanonicalContext, StoreError> {
     Ok(CanonicalContext {
         context_json: row.try_get::<JsonValue>("", "context_json")?,
@@ -351,13 +376,12 @@ fn context_from_row(row: &QueryResult) -> Result<CanonicalContext, StoreError> {
 
 fn quote_from_row(row: &QueryResult) -> Result<QuoteRecord, StoreError> {
     let request_json = row.try_get::<JsonValue>("", "request_json")?;
-    let request: CreateQuoteRequest = serde_json::from_value(request_json)
+    let wire_request: canonical_interfaces::QuoteRequest = serde_json::from_value(request_json)
+        .map_err(|_| StoreError::InvalidRecord("canonical_quote.request_json"))?;
+    let request = crate::wire::normalize_request(wire_request.clone())
         .map_err(|_| StoreError::InvalidRecord("canonical_quote.request_json"))?;
     let status = row.try_get::<String>("", "status")?;
-    if !matches!(
-        status.as_str(),
-        "queued" | "analyzing" | "completed" | "failed"
-    ) {
+    if !matches!(status.as_str(), "queued" | "analyzing" | "ready" | "failed") {
         return Err(StoreError::InvalidRecord("canonical_quote.status"));
     }
 
@@ -372,6 +396,9 @@ fn quote_from_row(row: &QueryResult) -> Result<QuoteRecord, StoreError> {
         persistence: "postgres".into(),
         quote_id: row.try_get::<Uuid>("", "id")?,
         status,
+        request: wire_request,
+        created_at: row.try_get::<DateTime<Utc>>("", "created_at")?,
+        updated_at: row.try_get::<DateTime<Utc>>("", "updated_at")?,
     })
 }
 
