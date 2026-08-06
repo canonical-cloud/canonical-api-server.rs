@@ -1,0 +1,47 @@
+name: apply health response contract
+
+on:
+  push:
+    branches:
+      - agent/quote-persistence-gemini
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/quote-persistence-gemini
+
+      - name: Align health JSON with the public camelCase contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/lib.rs')
+          source = path.read_text()
+          old = '#[derive(Serialize)]\nstruct HealthResponse {\n'
+          new = '#[derive(Serialize)]\n#[serde(rename_all = "camelCase")]\nstruct HealthResponse {\n'
+          if source.count(old) != 1:
+              raise SystemExit('expected exactly one HealthResponse derive block')
+          path.write_text(source.replace(old, new))
+          PY
+
+      - name: Format and commit the source-only correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git config user.name 'canonical-implementation-bot'
+          git config user.email 'canonical-implementation-bot@users.noreply.github.com'
+          git add src/lib.rs
+          git commit -m 'fix: serialize health fields as camelCase'
+          git push origin HEAD:agent/quote-persistence-gemini
