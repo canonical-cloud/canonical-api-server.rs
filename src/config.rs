@@ -2,7 +2,7 @@ use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Context;
 
-const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";
 
 #[derive(Clone)]
 pub struct Config {
@@ -175,7 +175,7 @@ mod tests {
     use super::DEFAULT_GEMINI_MODEL;
 
     #[test]
-    fn default_gemini_model_stays_on_operator_selected_pro_model() {
-        assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.6-pro");
+    fn default_gemini_model_uses_published_pro_endpoint() {
+        assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.1-pro-preview");
     }
 }
