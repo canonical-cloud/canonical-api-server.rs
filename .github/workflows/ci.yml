@@ -44,22 +44,45 @@ jobs:
           assert '/target/release/canonical-api-server' in dockerfile
           assert 'USER 65532:65532' in dockerfile
           assert 'cargo build --locked --release --bin canonical-api-server' in dockerfile
+          assert 'ENTRYPOINT ["/app/canonical-api-server"]' in dockerfile
           assert Path('.dockerignore').is_file()
+          assert Path('.github/workflows/release.yml').is_file()
 
           source = '\n'.join(
               path.read_text()
               for path in sorted(Path('src').glob('*.rs'))
           )
           for required in (
-              'CANONICAL_WEB_SERVICE_TOKEN',
+              'CANONICAL_INTERNAL_AUTH_TOKEN',
               'DATABASE_URL',
-              'MIGRATION_DATABASE_URL',
               'GEMINI_API_KEY',
               'GEMINI_MODEL',
+              'x-canonical-internal-token',
+              'x-canonical-subject',
+              'x-goog-api-key',
           ):
               assert required in source, required
-          assert 'const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro";' in source
-          assert 'GEMINI_MODEL=gemini-3.6-pro' in Path('.env.example').read_text()
+
+          assert 'pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";' in source
+          assert 'gemini-3.6-pro' not in source
+          env_example = Path('.env.example').read_text()
+          assert 'GEMINI_MODEL=gemini-3.1-pro-preview' in env_example
+          assert 'CANONICAL_INTERNAL_AUTH_TOKEN=' in env_example
+          assert 'gemini-3.6-pro' not in env_example
+
+          gemini = Path('src/gemini.rs').read_text()
+          assert '.redirect(Policy::none())' in gemini
+          assert 'generativelanguage.googleapis.com' in gemini
+          assert '"responseFormat"' in gemini
+          assert '"mimeType": "application/json"' in gemini
+          assert '"schema": analysis_schema()' in gemini
+          assert '"temperature": 0.2' not in gemini
+
+          schema = Path('db/schema.sql').read_text()
+          assert 'ALTER TABLE canonical_quote FORCE ROW LEVEL SECURITY' in schema
+          assert 'ALTER TABLE canonical_context FORCE ROW LEVEL SECURITY' in schema
+          assert 'canonical_quote_event' in schema
+          assert 'canonical_model_attempt' in schema
           PY
 
       - name: Install the pinned Rust toolchain
@@ -98,16 +121,40 @@ jobs:
           set -euo pipefail
           docker build --tag canonical-api-server:ci .
           test "$(docker image inspect canonical-api-server:ci --format '{{.Config.User}}')" = '65532:65532'
-          test "$(docker image inspect canonical-api-server:ci --format '{{json .Config.Entrypoint}}')" = '["/app/canonical-api-server","serve"]'
+          test "$(docker image inspect canonical-api-server:ci --format '{{json .Config.Entrypoint}}')" = '["/app/canonical-api-server"]'
           test "$(docker image inspect canonical-api-server:ci --format '{{json .Config.ExposedPorts}}')" = '{"8080/tcp":{}}'
 
-      - name: Prove the packaged executable starts without loading deployment secrets
+      - name: Smoke-test the packaged health endpoint
         shell: bash
         run: |
-          set +e
-          output="$(docker run --rm --entrypoint /app/canonical-api-server canonical-api-server:ci invalid 2>&1)"
-          status=$?
-          set -e
-          printf '%s\n' "$output"
-          test "$status" -ne 0
-          grep -Fq 'unknown command "invalid"; expected serve or migrate' <<<"$output"
+          set -euo pipefail
+          container_name=canonical-api-server-ci-runtime
+          cleanup() {
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach \
+            --name "$container_name" \
+            --env CANONICAL_INTERNAL_AUTH_TOKEN=ci-only-random-token-with-at-least-32-bytes \
+            --publish 127.0.0.1:18080:8080 \
+            canonical-api-server:ci >/dev/null
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/healthz > health.json; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18080/healthz > health.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          health = json.loads(Path('health.json').read_text())
+          assert health['service'] == 'canonical-api-server'
+          assert health['status'] == 'ok'
+          assert health['databaseConfigured'] is False
+          assert health['geminiConfigured'] is False
+          assert health['geminiModel'] == 'gemini-3.1-pro-preview'
+          PY

@@ -15,4 +15,4 @@ COPY --from=builder --chown=65532:65532 /workspace/target/release/canonical-api-
 
 EXPOSE 8080
 USER 65532:65532
-ENTRYPOINT ["/app/canonical-api-server", "serve"]
+ENTRYPOINT ["/app/canonical-api-server"]
