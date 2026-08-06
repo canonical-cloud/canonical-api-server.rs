@@ -28,8 +28,9 @@ normalized intake fields and the owner-scoped `canonical_context` row.
 
 1. `POST /v1/quotes` validates and normalizes a bounded request for SOC 2,
    HIPAA, NIST CSF, NIST 800-53, ISO 27001, PCI DSS, FedRAMP, or GDPR.
-2. PostgreSQL loads exactly one active `canonical_context` row using both its ID
-   and the authenticated owner subject.
+2. PostgreSQL selects the authenticated owner's single active
+   `canonical_context` row. A partial unique index makes that selection
+   unambiguous; browser input cannot choose a context UUID.
 3. The API stores immutable snapshots of the application Markdown, selected
    database context, and normalized request before starting analysis.
 4. Gemini receives those three bounded inputs under explicit untrusted-data
@@ -73,7 +74,7 @@ public origin.
 Apply [`db/schema.sql`](db/schema.sql) through the migration identity, not the
 runtime service login. The schema provides:
 
-- `canonical_context`;
+- `canonical_context`, with at most one active row per owner;
 - `canonical_quote` with immutable input snapshots and the structured result;
 - append-only `canonical_quote_event`;
 - provider metadata in `canonical_model_attempt`;
@@ -137,7 +138,8 @@ than a mutable tag.
 
 ## Production gates outside this repository
 
-- provision the exact Canonical PostgreSQL runtime/migration roles and apply the
+- provision the exact Canonical PostgreSQL runtime/migration roles, reconcile
+  any owner that currently has multiple active context rows, and apply the
   reviewed schema;
 - inject the Gemini key and internal service token from the cluster secret
   store;

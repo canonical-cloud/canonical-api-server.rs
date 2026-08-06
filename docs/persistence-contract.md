@@ -5,7 +5,7 @@ Shared Auth, Supabase Auth, or unrelated tenant tables directly.
 
 ## Durable records
 
-- `canonical_context`: owner-scoped operational context selected by the caller;
+- `canonical_context`: owner-scoped operational context selected by the API;
 - `canonical_quote`: immutable normalized request, application Markdown,
   database-context snapshots, chosen model, status, structured analysis, and a
   bounded error code;
@@ -34,11 +34,13 @@ is always recovered from `canonical_quote`.
 
 ## Context snapshot
 
-Quote creation loads one active row using the composite predicate
-`(context_record_id, owner_subject)`. The API stores copies of the selected
-record's Markdown and JSON plus the application-controlled Markdown submitted
-by the web tier. Later edits to `canonical_context` cannot silently alter the
-inputs that produced an existing quote.
+Quote creation loads the authenticated owner's single active row. A partial
+unique index on `owner_subject WHERE active = TRUE` prevents ambiguous active
+contexts. A legacy `context_record_id` field is accepted only for compatibility,
+then discarded and omitted from the persisted normalized request. The API stores
+copies of the selected record's Markdown and JSON plus its compiled
+application-controlled Markdown. Later edits to `canonical_context` cannot
+silently alter the inputs that produced an existing quote.
 
 ## Migration
 

@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn prompt_combines_application_and_postgres_context_without_losing_boundaries() {
         let request = CreateQuoteRequest {
-            context_record_id: Uuid::nil(),
+            legacy_context_record_id: None,
             frameworks: vec!["soc2".into(), "hipaa".into()],
             markdown_context: "# Product\nHosted service".into(),
             notes: Some("Initial estimate".into()),
