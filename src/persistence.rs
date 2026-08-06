@@ -45,11 +45,12 @@ pub async fn create_quote(
             r#"
             SELECT id, name, context_markdown, context_json
             FROM canonical_context
-            WHERE id = $1
-              AND owner_subject = $2
+            WHERE owner_subject = $1
               AND active = TRUE
+            ORDER BY updated_at DESC, id
+            LIMIT 1
             "#,
-            [request.context_record_id.into(), subject.to_owned().into()],
+            [subject.to_owned().into()],
         ))
         .await?
         .ok_or(StoreError::ContextNotFound)?;
@@ -81,7 +82,7 @@ pub async fn create_quote(
             [
                 record.quote_id.into(),
                 subject.to_owned().into(),
-                record.context_record_id.into(),
+                context.id.into(),
                 request_json.into(),
                 request.markdown_context.clone().into(),
                 context.context_markdown.clone().into(),

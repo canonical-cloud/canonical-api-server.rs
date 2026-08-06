@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS canonical_model_attempt (
 
 CREATE INDEX IF NOT EXISTS canonical_context_owner_active_idx
     ON canonical_context (owner_subject, active, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS canonical_context_one_active_per_owner_idx
+    ON canonical_context (owner_subject)
+    WHERE active = TRUE;
 CREATE INDEX IF NOT EXISTS canonical_quote_owner_created_idx
     ON canonical_quote (owner_subject, created_at DESC);
 CREATE INDEX IF NOT EXISTS canonical_quote_event_quote_sequence_idx
