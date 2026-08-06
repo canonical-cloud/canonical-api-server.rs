@@ -110,7 +110,7 @@ cargo clippy --all-targets -- -D warnings
 cargo run
 ```
 
-## Container
+## Container and release
 
 The multi-stage image uses a distroless non-root runtime (UID/GID `65532`) and
 contains only the release binary and runtime libraries.
@@ -124,9 +124,11 @@ docker run --rm \
 curl --fail http://127.0.0.1:8080/healthz
 ```
 
-Application CI builds and smoke-tests the image but does not publish it. The
-pinned `canonical-monorepo` release boundary owns image publication,
-attestation, and GitOps digest handoff.
+Application CI formats, tests, lints, builds, and smoke-tests the image. On
+`main`, `.github/workflows/release.yml` publishes immutable `main` and commit-SHA
+tags to GHCR with provenance and an SBOM, then records the image digest as a
+workflow artifact. Canonical GitOps configuration must consume the digest rather
+than a mutable tag.
 
 ## Production gates outside this repository
 
