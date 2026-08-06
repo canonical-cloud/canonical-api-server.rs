@@ -59,6 +59,10 @@ old = "    request.validate_and_normalize()?;\n    Ok(request)\n"
 if old not in source:
     raise SystemExit("wire request validation return not found")
 source = source.replace(old, "    request.validate_and_normalize()\n", 1)
+old = '            if values.iter().any(|value| *value == "low") {'
+if old not in source:
+    raise SystemExit("wire confidence contains optimization not found")
+source = source.replace(old, '            if values.contains(&"low") {', 1)
 wire.write_text(source)
 
 gemini = ROOT / "src/gemini.rs"
