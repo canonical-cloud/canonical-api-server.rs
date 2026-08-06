@@ -2,7 +2,7 @@
 name = "canonical-api-server"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.95"
 description = "Canonical Cloud quote REST and WebSocket API"
 license = "MIT"
 repository = "https://github.com/canonical-cloud/canonical-api-server.rs"
