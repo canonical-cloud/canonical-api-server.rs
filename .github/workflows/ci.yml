@@ -29,6 +29,7 @@ jobs:
           python3 - <<'PY'
           import tomllib
           from pathlib import Path
+
           manifest = tomllib.loads(Path('.zpkg.toml').read_text())
           assert manifest['package']['name'] == 'canonical-api-server'
           assert set(manifest['dependencies']) == {
@@ -39,6 +40,14 @@ jobs:
           assert 'CANONICAL_INTERNAL_AUTH_TOKEN' in source
           assert 'DEFAULT_GEMINI_MODEL' in source
           assert Path('.zpkg.lock').read_text() == 'version = 1\n'
+
+          dockerfile = Path('Dockerfile').read_text()
+          assert 'FROM gcr.io/distroless/cc-debian12:nonroot' in dockerfile
+          assert 'COPY --from=builder --chown=65532:65532' in dockerfile
+          assert '/target/release/canonical-api-server' in dockerfile
+          assert 'USER 65532:65532' in dockerfile
+          assert 'COPY . ' not in dockerfile
+          assert Path('.dockerignore').is_file()
           PY
 
       - name: Format, test, and lint
@@ -48,3 +57,61 @@ jobs:
           cargo fmt --all -- --check
           cargo test --all-targets
           cargo clippy --all-targets -- -D warnings
+
+  container:
+    needs: rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build distroless image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag canonical-api-server:ci .
+          test "$(docker image inspect canonical-api-server:ci --format '{{.Config.User}}')" = '65532:65532'
+
+      - name: Smoke-test container health
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run --detach --rm \
+            --env CANONICAL_INTERNAL_AUTH_TOKEN=0123456789abcdef0123456789abcdef \
+            --publish 127.0.0.1::8080 \
+            canonical-api-server:ci)"
+          cleanup() {
+            docker logs "$container_id" 2>/dev/null || true
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          port="$(docker inspect \
+            --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' \
+            "$container_id")"
+          response=''
+          for _ in $(seq 1 30); do
+            if response="$(curl --fail --silent --show-error \
+              "http://127.0.0.1:${port}/healthz" 2>/dev/null)"; then
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_id")" != true ]; then
+              echo 'container exited before becoming healthy' >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test -n "$response"
+          RESPONSE="$response" python3 - <<'PY'
+          import json
+          import os
+
+          body = json.loads(os.environ['RESPONSE'])
+          assert body['service'] == 'canonical-api-server'
+          assert body['status'] == 'ok'
+          assert body['gemini_model'] == 'gemini-3.6-pro'
+          assert body['database_configured'] is False
+          PY

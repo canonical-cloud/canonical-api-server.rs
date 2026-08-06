@@ -1,0 +1,9 @@
+.git
+.github
+target
+.env
+.env.*
+!.env.example
+tmp
+**/*.log
+.DS_Store
