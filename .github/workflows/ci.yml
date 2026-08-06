@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: canonical-api-ci-${{ github.ref }}
+  group: canonical-api-server-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate package and security contracts
+      - name: Validate package, container, model, and security contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -36,9 +36,6 @@ jobs:
               'canonical-cloud/canonical-interfaces',
               'canonical-cloud/canonical-lib',
           }
-          source = Path('src/lib.rs').read_text()
-          assert 'CANONICAL_INTERNAL_AUTH_TOKEN' in source
-          assert 'DEFAULT_GEMINI_MODEL' in source
           assert Path('.zpkg.lock').read_text() == 'version = 1\n'
 
           dockerfile = Path('Dockerfile').read_text()
@@ -46,17 +43,44 @@ jobs:
           assert 'COPY --from=builder --chown=65532:65532' in dockerfile
           assert '/target/release/canonical-api-server' in dockerfile
           assert 'USER 65532:65532' in dockerfile
-          assert 'COPY . ' not in dockerfile
+          assert 'cargo build --locked --release --bin canonical-api-server' in dockerfile
           assert Path('.dockerignore').is_file()
+
+          source = '\n'.join(
+              path.read_text()
+              for path in sorted(Path('src').glob('*.rs'))
+          )
+          for required in (
+              'CANONICAL_WEB_SERVICE_TOKEN',
+              'DATABASE_URL',
+              'MIGRATION_DATABASE_URL',
+              'GEMINI_API_KEY',
+              'GEMINI_MODEL',
+          ):
+              assert required in source, required
+          assert 'const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro";' in source
+          assert 'GEMINI_MODEL=gemini-3.6-pro' in Path('.env.example').read_text()
           PY
 
-      - name: Format, test, and lint
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all -- --check
-          cargo test --all-targets
-          cargo clippy --all-targets -- -D warnings
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: canonical-api-server-ubuntu-24.04-rust-1.95
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint with warnings denied
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Run all tests
+        run: cargo test --all-targets --all-features --locked
 
   container:
     needs: rust
@@ -68,50 +92,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build distroless image
+      - name: Build and inspect the distroless image
         shell: bash
         run: |
           set -euo pipefail
           docker build --tag canonical-api-server:ci .
           test "$(docker image inspect canonical-api-server:ci --format '{{.Config.User}}')" = '65532:65532'
+          test "$(docker image inspect canonical-api-server:ci --format '{{json .Config.Entrypoint}}')" = '["/app/canonical-api-server","serve"]'
+          test "$(docker image inspect canonical-api-server:ci --format '{{json .Config.ExposedPorts}}')" = '{"8080/tcp":{}}'
 
-      - name: Smoke-test container health
+      - name: Prove the packaged executable starts without loading deployment secrets
         shell: bash
         run: |
-          set -euo pipefail
-          container_id="$(docker run --detach --rm \
-            --env CANONICAL_INTERNAL_AUTH_TOKEN=0123456789abcdef0123456789abcdef \
-            --publish 127.0.0.1::8080 \
-            canonical-api-server:ci)"
-          cleanup() {
-            docker logs "$container_id" 2>/dev/null || true
-            docker rm --force "$container_id" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
-          port="$(docker inspect \
-            --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' \
-            "$container_id")"
-          response=''
-          for _ in $(seq 1 30); do
-            if response="$(curl --fail --silent --show-error \
-              "http://127.0.0.1:${port}/healthz" 2>/dev/null)"; then
-              break
-            fi
-            if [ "$(docker inspect --format '{{.State.Running}}' "$container_id")" != true ]; then
-              echo 'container exited before becoming healthy' >&2
-              exit 1
-            fi
-            sleep 1
-          done
-          test -n "$response"
-          RESPONSE="$response" python3 - <<'PY'
-          import json
-          import os
-
-          body = json.loads(os.environ['RESPONSE'])
-          assert body['service'] == 'canonical-api-server'
-          assert body['status'] == 'ok'
-          assert body['gemini_model'] == 'gemini-3.6-pro'
-          assert body['database_configured'] is False
-          PY
+          set +e
+          output="$(docker run --rm --entrypoint /app/canonical-api-server canonical-api-server:ci invalid 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -Fq 'unknown command "invalid"; expected serve or migrate' <<<"$output"
