@@ -65,13 +65,13 @@ jobs:
           )
           if count != 1:
               raise SystemExit('normalized request derive block not found exactly once')
-          source = source.replace('    #[serde(skip)]\n    pub(crate) wire:', '    pub(crate) wire:', 1)
-          source = source.replace(
-              '    #[serde(default, rename = "context_record_id", skip_serializing)]\n',
-              '',
-              1,
-          )
-          source = source.replace('    #[serde(default)]\n    pub frameworks:', '    pub frameworks:', 1)
+          start = source.index('pub struct CreateQuoteRequest {')
+          end = source.index('\n}\n\nimpl CreateQuoteRequest', start)
+          block = source[start:end]
+          block, removed = re.subn(r'^    #\[serde\([^\n]*\)\]\n', '', block, flags=re.M)
+          if removed < 3:
+              raise SystemExit('expected at least three stale serde field attributes')
+          source = source[:start] + block + source[end:]
           source = source.replace('    #[serde(skip_serializing)]\n    pub owner_subject:', '    pub owner_subject:', 1)
           lib.write_text(source)
 
