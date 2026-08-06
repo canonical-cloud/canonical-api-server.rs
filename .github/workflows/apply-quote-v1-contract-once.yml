@@ -53,14 +53,18 @@ jobs:
           python3 scripts/apply_quote_v1_contract.py
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           lib = Path('src/lib.rs')
           source = lib.read_text()
-          old = '#[derive(Clone, Debug, Deserialize, Serialize)]\npub struct CreateQuoteRequest {'
-          new = '#[derive(Clone, Debug)]\npub struct CreateQuoteRequest {'
-          if old not in source:
-              raise SystemExit('normalized request derive block not found')
-          source = source.replace(old, new, 1)
+          source, count = re.subn(
+              r'#\[derive\(Clone, Debug, Deserialize, Serialize\)\]\n#\[serde\(deny_unknown_fields\)\]\npub struct CreateQuoteRequest \{',
+              '#[derive(Clone, Debug)]\npub struct CreateQuoteRequest {',
+              source,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('normalized request derive block not found exactly once')
           source = source.replace('    #[serde(skip)]\n    pub(crate) wire:', '    pub(crate) wire:', 1)
           source = source.replace('    #[serde(skip_serializing)]\n    pub owner_subject:', '    pub owner_subject:', 1)
           lib.write_text(source)
