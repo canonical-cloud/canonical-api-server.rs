@@ -21,6 +21,11 @@ PostgreSQL persistence, and Gemini provider orchestration.
 
 ## Implemented quote flow
 
+The application-level Markdown policy is compiled from
+`context/quote-analysis.md`. Browser requests may omit `markdown_context`, and
+any supplied value is ignored. Customer-specific facts still come from the
+normalized intake fields and the owner-scoped `canonical_context` row.
+
 1. `POST /v1/quotes` validates and normalizes a bounded request for SOC 2,
    HIPAA, NIST CSF, NIST 800-53, ISO 27001, PCI DSS, FedRAMP, or GDPR.
 2. PostgreSQL loads exactly one active `canonical_context` row using both its ID
