@@ -668,6 +668,7 @@ struct QuoteEvent {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct HealthResponse {
     database_configured: bool,
     gemini_configured: bool,
