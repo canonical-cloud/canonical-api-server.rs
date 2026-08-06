@@ -33,6 +33,7 @@ source = source.replace(
     "        build_router, AppState,\n",
     1,
 )
+source = source.replace("/api/api/v1/quotes", "/api/v1/quotes")
 old_list_assertion = (
     "        let quotes = body.as_array().unwrap();\n"
     "        assert_eq!(quotes.len(), 1);\n"
