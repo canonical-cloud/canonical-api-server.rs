@@ -51,6 +51,35 @@ jobs:
           path.write_text(source)
           PY
           python3 scripts/apply_quote_v1_contract.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path('src/lib.rs')
+          source = lib.read_text()
+          old = '#[derive(Clone, Debug, Deserialize, Serialize)]\npub struct CreateQuoteRequest {'
+          new = '#[derive(Clone, Debug)]\npub struct CreateQuoteRequest {'
+          if old not in source:
+              raise SystemExit('normalized request derive block not found')
+          source = source.replace(old, new, 1)
+          source = source.replace('    #[serde(skip)]\n    pub(crate) wire:', '    pub(crate) wire:', 1)
+          source = source.replace('    #[serde(skip_serializing)]\n    pub owner_subject:', '    pub owner_subject:', 1)
+          lib.write_text(source)
+
+          wire = Path('src/wire.rs')
+          source = wire.read_text()
+          old = '''    let mut request = CreateQuoteRequest {
+'''
+          if old not in source:
+              raise SystemExit('wire request construction not found')
+          source = source.replace(old, '    let request = CreateQuoteRequest {\n', 1)
+          old = '''    request.validate_and_normalize()?;
+    Ok(request)
+'''
+          if old not in source:
+              raise SystemExit('wire request validation return not found')
+          source = source.replace(old, '    request.validate_and_normalize()\n', 1)
+          wire.write_text(source)
+          PY
           # The existing lock already certifies SeaORM 2.0.1 and SQLx 0.9 on
           # Rust 1.95. This first unlocked run adds only the immutable interface
           # dependency and any feature-required entries, then all certification
