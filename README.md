@@ -54,6 +54,25 @@ cargo clippy --all-targets -- -D warnings
 cargo run
 ```
 
+## Container
+
+The repository provides a multi-stage image whose runtime is distroless and
+runs as UID/GID `65532`. The image contains only the release binary and runtime
+libraries; it has no shell or package manager.
+
+```sh
+docker build --tag canonical-api-server:local .
+docker run --rm \
+  --env CANONICAL_INTERNAL_AUTH_TOKEN=replace-with-at-least-32-random-bytes \
+  --publish 8080:8080 \
+  canonical-api-server:local
+curl --fail http://127.0.0.1:8080/healthz
+```
+
+Application CI builds and smoke-tests this image but does not publish it. The
+pinned `canonical-monorepo` release boundary owns deployable image publication,
+attestation, and GitOps digest handoff.
+
 ## Production gates
 
 1. add SeaORM entities/migrations for quote requests, context snapshots, model
