@@ -45,8 +45,7 @@ impl Config {
         Ok(Self {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").ok(),
-            gemini_model: env::var("GEMINI_MODEL")
-                .unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.into()),
+            gemini_model: env::var("GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.into()),
             internal_auth_token,
         })
     }
@@ -177,7 +176,10 @@ async fn get_quote(
         .cloned()
         .ok_or_else(|| ApiError::not_found("quote_not_found", "quote was not found"))?;
     if record.owner_subject != subject {
-        return Err(ApiError::not_found("quote_not_found", "quote was not found"));
+        return Err(ApiError::not_found(
+            "quote_not_found",
+            "quote was not found",
+        ));
     }
     Ok(Json(record))
 }
@@ -197,7 +199,10 @@ async fn quote_events(
         .cloned()
         .ok_or_else(|| ApiError::not_found("quote_not_found", "quote was not found"))?;
     if record.owner_subject != subject {
-        return Err(ApiError::not_found("quote_not_found", "quote was not found"));
+        return Err(ApiError::not_found(
+            "quote_not_found",
+            "quote was not found",
+        ));
     }
 
     Ok(upgrade.on_upgrade(move |socket| stream_quote_events(socket, state, quote_id, subject)))
@@ -246,7 +251,10 @@ async fn stream_quote_events(
 
 async fn send_json<T: Serialize>(socket: &mut WebSocket, value: &T) -> Result<(), ()> {
     let payload = serde_json::to_string(value).map_err(|_| ())?;
-    socket.send(Message::Text(payload.into())).await.map_err(|_| ())
+    socket
+        .send(Message::Text(payload.into()))
+        .await
+        .map_err(|_| ())
 }
 
 fn authenticate(headers: &HeaderMap, expected_token: &str) -> Result<String, ApiError> {
@@ -311,7 +319,11 @@ impl CreateQuoteRequest {
                 "markdown_context must contain 1 to 262144 bytes",
             ));
         }
-        if self.notes.as_deref().is_some_and(|notes| notes.len() > 32_768) {
+        if self
+            .notes
+            .as_deref()
+            .is_some_and(|notes| notes.len() > 32_768)
+        {
             return Err(ApiError::bad_request(
                 "notes_too_large",
                 "notes must not exceed 32768 bytes",
@@ -419,14 +431,18 @@ mod tests {
     #[tokio::test]
     async fn health_is_public_and_reports_database_state() {
         let response = app()
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body: Value = serde_json::from_slice(
-            &response.into_body().collect().await.unwrap().to_bytes(),
-        )
-        .unwrap();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
         assert_eq!(body["database_configured"], false);
         assert_eq!(body["gemini_model"], DEFAULT_GEMINI_MODEL);
     }
@@ -465,10 +481,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(create.status(), StatusCode::ACCEPTED);
-        let body: Value = serde_json::from_slice(
-            &create.into_body().collect().await.unwrap().to_bytes(),
-        )
-        .unwrap();
+        let body: Value =
+            serde_json::from_slice(&create.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
         let quote_id = body["quote_id"].as_str().unwrap();
         Uuid::parse_str(quote_id).unwrap();
 
