@@ -66,6 +66,12 @@ jobs:
           if count != 1:
               raise SystemExit('normalized request derive block not found exactly once')
           source = source.replace('    #[serde(skip)]\n    pub(crate) wire:', '    pub(crate) wire:', 1)
+          source = source.replace(
+              '    #[serde(default, rename = "context_record_id", skip_serializing)]\n',
+              '',
+              1,
+          )
+          source = source.replace('    #[serde(default)]\n    pub frameworks:', '    pub frameworks:', 1)
           source = source.replace('    #[serde(skip_serializing)]\n    pub owner_subject:', '    pub owner_subject:', 1)
           lib.write_text(source)
 
@@ -80,6 +86,14 @@ jobs:
               raise SystemExit('wire request validation return not found')
           source = source.replace(old, '    request.validate_and_normalize()\n', 1)
           wire.write_text(source)
+
+          gemini = Path('src/gemini.rs')
+          source = gemini.read_text()
+          old = 'serde_json::to_string_pretty(request)'
+          if old not in source:
+              raise SystemExit('Gemini request serialization boundary not found')
+          source = source.replace(old, 'serde_json::to_string_pretty(&request.wire)', 1)
+          gemini.write_text(source)
           PY
           # The existing lock already certifies SeaORM 2.0.1 and SQLx 0.9 on
           # Rust 1.95. This first unlocked run adds only the immutable interface
