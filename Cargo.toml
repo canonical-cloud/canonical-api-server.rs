@@ -13,10 +13,12 @@ name = "canonical-api-server"
 path = "src/main.rs"
 
 [dependencies]
+canonical-interfaces = { git = "https://github.com/canonical-cloud/canonical-interfaces", rev = "3415d6d97721b18ee6734659d73a95ff3d35a151", package = "canonical-interfaces" }
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde"] }
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 futures-util = "0.3.32"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
-sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
+sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json", "with-uuid"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 subtle = "2.6.1"

@@ -21,7 +21,7 @@ pub(crate) fn normalize_request(wire: WireQuoteRequest) -> Result<CreateQuoteReq
         industry: "not_specified".into(),
         legal_name: wire.organization_name.clone(),
     };
-    let mut request = CreateQuoteRequest {
+    let request = CreateQuoteRequest {
         legacy_context_record_id: None,
         frameworks: wire.frameworks.clone(),
         markdown_context: String::new(),
@@ -30,8 +30,7 @@ pub(crate) fn normalize_request(wire: WireQuoteRequest) -> Result<CreateQuoteReq
         target_date: wire.target_date.clone(),
         wire,
     };
-    request.validate_and_normalize()?;
-    Ok(request)
+    request.validate_and_normalize()
 }
 
 pub(crate) fn now() -> DateTime<Utc> {
@@ -139,7 +138,7 @@ fn estimate(record: &QuoteRecord) -> Option<QuoteEstimate> {
                 .iter()
                 .filter_map(|service| service.get("confidence").and_then(JsonValue::as_str))
                 .collect();
-            if values.iter().any(|value| *value == "low") {
+            if values.contains(&"low") {
                 "low"
             } else if !values.is_empty() && values.iter().all(|value| *value == "high") {
                 "high"
