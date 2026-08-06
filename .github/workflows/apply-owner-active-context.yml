@@ -32,11 +32,11 @@ jobs:
           cargo +1.95.0 test --all-targets --all-features --locked
           cargo +1.95.0 clippy --all-targets --all-features --locked -- -D warnings
 
-      - name: Commit verified implementation
+      - name: Commit verified source-only implementation
         run: |
           set -euo pipefail
           git config user.name 'canonical-implementation-bot'
           git config user.email 'canonical-implementation-bot@users.noreply.github.com'
-          git add src/lib.rs src/persistence.rs db/schema.sql README.md docs/persistence-contract.md .github/workflows/ci.yml
+          git add src/lib.rs src/gemini.rs src/persistence.rs db/schema.sql README.md docs/persistence-contract.md
           git commit -m 'fix: select active context by authenticated owner'
           git push origin HEAD:agent/owner-active-context
