@@ -784,9 +784,9 @@ mod tests {
         let body: Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
-        assert_eq!(body["database_configured"], false);
-        assert_eq!(body["gemini_configured"], false);
-        assert_eq!(body["gemini_model"], DEFAULT_GEMINI_MODEL);
+        assert_eq!(body["databaseConfigured"], false);
+        assert_eq!(body["geminiConfigured"], false);
+        assert_eq!(body["geminiModel"], DEFAULT_GEMINI_MODEL);
     }
 
     #[tokio::test]
