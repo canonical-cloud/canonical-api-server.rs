@@ -34,6 +34,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('scripts/apply_quote_v1_contract.py')
+          source = path.read_text()
+          source, count = re.subn(
+              r'\nreplace\(\n    "src/lib\.rs",\n    \'            Self::InvalidGeminiModel.*?\n\)\n# The source uses',
+              '\n# The source uses',
+              source,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit('could not remove obsolete ConfigError exact-match block')
+          path.write_text(source)
+          PY
           python3 scripts/apply_quote_v1_contract.py
           cargo update
           cargo fmt --all
