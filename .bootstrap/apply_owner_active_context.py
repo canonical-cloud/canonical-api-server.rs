@@ -143,6 +143,13 @@ replace_once(
 """,
 )
 
+gemini = Path("src/gemini.rs")
+replace_once(
+    gemini,
+    "            context_record_id: Uuid::nil(),\n",
+    "            legacy_context_record_id: None,\n",
+)
+
 persistence = Path("src/persistence.rs")
 replace_once(
     persistence,
