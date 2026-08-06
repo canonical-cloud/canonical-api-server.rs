@@ -133,6 +133,44 @@ pub async fn get_quote(
     Ok(record)
 }
 
+pub async fn list_quotes(
+    database: &DatabaseConnection,
+    subject: &str,
+    limit: u64,
+) -> Result<Vec<QuoteRecord>, StoreError> {
+    let transaction = begin_subject_transaction(database, subject).await?;
+    let rows = transaction
+        .query_all_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Postgres,
+            r#"
+            SELECT
+                id,
+                owner_subject,
+                context_record_id,
+                request_json,
+                gemini_model,
+                status,
+                analysis_json,
+                error_code
+            FROM canonical_quote
+            WHERE owner_subject = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+            [
+                subject.to_owned().into(),
+                i64::try_from(limit.clamp(1, 100)).unwrap_or(100).into(),
+            ],
+        ))
+        .await?;
+    let records = rows
+        .iter()
+        .map(quote_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    transaction.commit().await?;
+    Ok(records)
+}
+
 pub async fn update_quote(
     database: &DatabaseConnection,
     record: &QuoteRecord,
