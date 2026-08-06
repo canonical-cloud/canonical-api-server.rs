@@ -1,0 +1,37 @@
+[package]
+org = "canonical-cloud"
+name = "canonical-api-server"
+version = "0.1.0"
+description = "Canonical quote REST and WebSocket API in Rust"
+license = "MIT"
+keywords = ["api", "axum", "seaorm", "websocket", "compliance"]
+language = "rust"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/canonical-cloud/canonical-api-server.rs"
+
+[dependencies]
+"canonical-cloud/canonical-interfaces" = "^0.1.0"
+"canonical-cloud/canonical-lib" = "^0.1.0"
+
+[build]
+command = "cargo build --release --bin canonical-api-server"
+outputs = ["target/release/canonical-api-server"]
+
+[bin]
+canonical-api-server = "target/release/canonical-api-server"
+
+[publish]
+include_readme = true
+tag_format = "v{version}"
+exclude = [".env", ".env.*", ".direnv/**", ".vendor/.zed/**", ".zed/**", ".zed-pack/**", "target/**", "tmp/**", "**/*.log", ".DS_Store"]
+
+[install]
+adapter = "none"
+dir = ".vendor/.zed"
+
+[scripts]
+test = "cargo test --all-targets"
+lint = "cargo clippy --all-targets -- -D warnings"
+format = "cargo fmt --all -- --check"

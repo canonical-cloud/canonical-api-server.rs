@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-api-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate package and security contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          manifest = tomllib.loads(Path('.zpkg.toml').read_text())
+          assert manifest['package']['name'] == 'canonical-api-server'
+          assert set(manifest['dependencies']) == {
+              'canonical-cloud/canonical-interfaces',
+              'canonical-cloud/canonical-lib',
+          }
+          source = Path('src/lib.rs').read_text()
+          assert 'CANONICAL_INTERNAL_AUTH_TOKEN' in source
+          assert 'DEFAULT_GEMINI_MODEL' in source
+          assert Path('.zpkg.lock').read_text() == 'version = 1\n'
+          PY
+
+      - name: Format, test, and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --all-targets
+          cargo clippy --all-targets -- -D warnings
