@@ -38,10 +38,12 @@ Each job also loads the active version of `QUOTE_CONTEXT_KEY` from
 model response must pass strict schema, size, range, and line-item-total checks
 before it becomes a quote.
 
-The deployment must set both `GEMINI_API_KEY` and `GEMINI_MODEL`. The model id is
-configuration rather than source because approved Pro aliases and preview
-lifecycles change. The API key is sent only in the server-side
-`x-goog-api-key` header.
+The service requires `GEMINI_API_KEY` and defaults `GEMINI_MODEL` to the
+published `gemini-3.1-pro-preview` endpoint. Deployments may override the model
+without rebuilding, but production configuration should pin an explicitly
+approved Pro model and re-certify the structured-output contract whenever that
+value changes. The API key is sent only in the server-side `x-goog-api-key`
+header.
 
 Seed a database context after applying the schema, for example:
 
