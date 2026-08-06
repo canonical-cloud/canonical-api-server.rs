@@ -53,13 +53,18 @@ jobs:
           python3 scripts/apply_quote_v1_contract.py
           python3 - <<'PY'
           from pathlib import Path
+          import re
           path = Path('Cargo.toml')
           source = path.read_text()
-          old = 'sea-orm = { version = "2.0.0-rc.4",'
-          new = 'sea-orm = { version = "=2.0.0-rc.4",'
-          if old not in source:
-              raise SystemExit('expected reviewed SeaORM RC dependency not found')
-          path.write_text(source.replace(old, new, 1))
+          source, count = re.subn(
+              r'(?m)^(sea-orm\s*=\s*\{[^\n]*\bversion\s*=\s*)"2\.0\.0-rc\.4"',
+              r'\1"=2.0.0-rc.4"',
+              source,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('expected reviewed SeaORM RC dependency not found exactly once')
+          path.write_text(source)
           PY
           # Preserve the Rust 1.88-compatible SeaORM/SQLx graph while adding
           # the immutable interface package and chrono feature support.
