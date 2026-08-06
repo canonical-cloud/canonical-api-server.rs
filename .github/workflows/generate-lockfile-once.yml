@@ -1,0 +1,29 @@
+name: generate lockfile once
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/generate-lockfile-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate deterministic lockfile payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          echo 'LOCKFILE_GZIP_BASE64_BEGIN'
+          gzip -9 --stdout Cargo.lock | base64 -w0
+          echo
+          echo 'LOCKFILE_GZIP_BASE64_END'
