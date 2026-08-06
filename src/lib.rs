@@ -63,6 +63,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let internal_auth_token = env::var("CANONICAL_INTERNAL_AUTH_TOKEN")
+            .or_else(|_| env::var("CANONICAL_WEB_SERVICE_TOKEN"))
             .map_err(|_| ConfigError::MissingInternalAuthToken)?;
         if internal_auth_token.trim().len() < 32 {
             return Err(ConfigError::WeakInternalAuthToken);
@@ -245,7 +246,12 @@ async fn create_quote(
     let subject = state.auth.authenticate(&headers).await?;
     let request = wire::normalize_request(request)?;
 
-    let quote_id = Uuid::new_v4();
+    let quote_id = idempotency_key(&headers)?.unwrap_or_else(Uuid::new_v4);
+    if let Some(existing) = state.quotes.read().await.get(&quote_id).cloned() {
+        ensure_idempotent_replay(&existing, &subject, &request.wire)?;
+        return Ok((StatusCode::ACCEPTED, Json(wire::submission(&existing))));
+    }
+
     let mut record = QuoteRecord {
         analysis: None,
         context_record_id: Uuid::nil(),
@@ -268,11 +274,24 @@ async fn create_quote(
 
     let context = match state.database.as_ref() {
         Some(database) => {
-            let context = persistence::create_quote(database, &subject, &request, &record)
+            match persistence::create_quote(database, &subject, &request, &record)
                 .await
-                .map_err(map_store_error)?;
-            record.context_record_id = context.id;
-            context
+                .map_err(map_store_error)?
+            {
+                persistence::CreateQuoteOutcome::Created(context) => {
+                    record.context_record_id = context.id;
+                    context
+                }
+                persistence::CreateQuoteOutcome::Existing(existing) => {
+                    let existing = *existing;
+                    state
+                        .quotes
+                        .write()
+                        .await
+                        .insert(existing.quote_id, existing.clone());
+                    return Ok((StatusCode::ACCEPTED, Json(wire::submission(&existing))));
+                }
+            }
         }
         None => {
             let context = CanonicalContext::request_only();
@@ -281,7 +300,13 @@ async fn create_quote(
         }
     };
 
-    state.quotes.write().await.insert(quote_id, record.clone());
+    let mut quotes = state.quotes.write().await;
+    if let Some(existing) = quotes.get(&quote_id).cloned() {
+        ensure_idempotent_replay(&existing, &subject, &request.wire)?;
+        return Ok((StatusCode::ACCEPTED, Json(wire::submission(&existing))));
+    }
+    quotes.insert(quote_id, record.clone());
+    drop(quotes);
     publish_event(&state, &record);
 
     let worker_state = state.clone();
@@ -291,6 +316,34 @@ async fn create_quote(
     });
 
     Ok((StatusCode::ACCEPTED, Json(wire::submission(&record))))
+}
+
+fn idempotency_key(headers: &HeaderMap) -> Result<Option<Uuid>, ApiError> {
+    let Some(value) = headers.get("idempotency-key") else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| {
+        ApiError::bad_request("invalid_idempotency_key", "Idempotency-Key must be a UUID")
+    })?;
+    Uuid::parse_str(value).map(Some).map_err(|_| {
+        ApiError::bad_request("invalid_idempotency_key", "Idempotency-Key must be a UUID")
+    })
+}
+
+fn ensure_idempotent_replay(
+    existing: &QuoteRecord,
+    subject: &str,
+    request: &canonical_interfaces::QuoteRequest,
+) -> Result<(), ApiError> {
+    let same_request =
+        serde_json::to_value(&existing.request).ok() == serde_json::to_value(request).ok();
+    if existing.owner_subject != subject || !same_request {
+        return Err(ApiError::conflict(
+            "idempotency_key_reused",
+            "Idempotency-Key was already used for a different quote request",
+        ));
+    }
+    Ok(())
 }
 
 async fn run_quote_analysis(
@@ -758,6 +811,10 @@ fn map_store_error(error: persistence::StoreError) -> ApiError {
         persistence::StoreError::QuoteNotFound => {
             ApiError::not_found("quote_not_found", "quote was not found")
         }
+        persistence::StoreError::IdempotencyKeyReused => ApiError::conflict(
+            "idempotency_key_reused",
+            "Idempotency-Key was already used for a different quote request",
+        ),
         persistence::StoreError::Database(_) | persistence::StoreError::InvalidRecord(_) => {
             error!(
                 error_code = error.code(),
@@ -917,6 +974,97 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn idempotency_key_replays_the_same_quote_once() {
+        let app = app();
+        let key = Uuid::new_v4();
+        let mut quote_ids = Vec::new();
+
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/quotes")
+                        .header("content-type", "application/json")
+                        .header("idempotency-key", key.to_string())
+                        .header("x-canonical-internal-token", TOKEN)
+                        .header("x-canonical-subject", "user-123")
+                        .body(Body::from(valid_payload().to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            quote_ids.push(body["quoteId"].as_str().unwrap().to_owned());
+        }
+
+        assert_eq!(quote_ids, [key.to_string(), key.to_string()]);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/quotes")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["quotes"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn idempotency_key_rejects_a_different_quote_request() {
+        let app = app();
+        let key = Uuid::new_v4();
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", key.to_string())
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::from(valid_payload().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+        let mut changed = valid_payload();
+        changed["organizationName"] = json!("Different Incorporated");
+        let replay = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", key.to_string())
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::from(changed.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        let body: Value =
+            serde_json::from_slice(&replay.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["code"], "idempotency_key_reused");
     }
 
     #[tokio::test]

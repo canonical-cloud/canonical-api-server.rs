@@ -17,6 +17,8 @@ pub enum StoreError {
     Database(#[from] DbErr),
     #[error("stored record is invalid: {0}")]
     InvalidRecord(&'static str),
+    #[error("idempotency key was reused with a different request")]
+    IdempotencyKeyReused,
     #[error("quote was not found")]
     QuoteNotFound,
 }
@@ -27,9 +29,16 @@ impl StoreError {
             Self::ContextNotFound => "context_not_found",
             Self::Database(_) => "database_error",
             Self::InvalidRecord(_) => "invalid_stored_record",
+            Self::IdempotencyKeyReused => "idempotency_key_reused",
             Self::QuoteNotFound => "quote_not_found",
         }
     }
+}
+
+#[derive(Debug)]
+pub enum CreateQuoteOutcome {
+    Created(CanonicalContext),
+    Existing(Box<QuoteRecord>),
 }
 
 pub async fn create_quote(
@@ -37,8 +46,16 @@ pub async fn create_quote(
     subject: &str,
     request: &CreateQuoteRequest,
     record: &QuoteRecord,
-) -> Result<CanonicalContext, StoreError> {
+) -> Result<CreateQuoteOutcome, StoreError> {
     let transaction = begin_subject_transaction(database, subject).await?;
+
+    let request_json = serde_json::to_value(&request.wire)
+        .map_err(|_| StoreError::InvalidRecord("quote request"))?;
+    if let Some(row) = find_quote_row(&transaction, subject, record.quote_id).await? {
+        let outcome = existing_quote_outcome(&row, &request_json)?;
+        transaction.commit().await?;
+        return Ok(outcome);
+    }
 
     let row = transaction
         .query_one_raw(Statement::from_sql_and_values(
@@ -59,9 +76,7 @@ pub async fn create_quote(
     let context = context_from_row(&row)?;
     context.validate().map_err(StoreError::InvalidRecord)?;
 
-    let request_json = serde_json::to_value(&request.wire)
-        .map_err(|_| StoreError::InvalidRecord("quote request"))?;
-    transaction
+    let insert = transaction
         .execute_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
             r#"
@@ -79,12 +94,13 @@ pub async fn create_quote(
                 error_code
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL)
+            ON CONFLICT (id) DO NOTHING
             "#,
             [
                 record.quote_id.into(),
                 subject.to_owned().into(),
                 context.id.into(),
-                request_json.into(),
+                request_json.clone().into(),
                 request.markdown_context.clone().into(),
                 context.context_markdown.clone().into(),
                 context.context_json.clone().into(),
@@ -94,9 +110,60 @@ pub async fn create_quote(
         ))
         .await?;
 
+    if insert.rows_affected() == 0 {
+        let Some(row) = find_quote_row(&transaction, subject, record.quote_id).await? else {
+            transaction.rollback().await?;
+            return Err(StoreError::IdempotencyKeyReused);
+        };
+        let outcome = existing_quote_outcome(&row, &request_json)?;
+        transaction.commit().await?;
+        return Ok(outcome);
+    }
+
     insert_event(&transaction, record).await?;
     transaction.commit().await?;
-    Ok(context)
+    Ok(CreateQuoteOutcome::Created(context))
+}
+
+async fn find_quote_row(
+    transaction: &DatabaseTransaction,
+    subject: &str,
+    quote_id: Uuid,
+) -> Result<Option<QueryResult>, StoreError> {
+    transaction
+        .query_one_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Postgres,
+            r#"
+            SELECT
+                id,
+                owner_subject,
+                context_record_id,
+                request_json,
+                gemini_model,
+                status,
+                analysis_json,
+                error_code,
+                created_at,
+                updated_at
+            FROM canonical_quote
+            WHERE id = $1
+              AND owner_subject = $2
+            "#,
+            [quote_id.into(), subject.to_owned().into()],
+        ))
+        .await
+        .map_err(StoreError::from)
+}
+
+fn existing_quote_outcome(
+    row: &QueryResult,
+    request_json: &JsonValue,
+) -> Result<CreateQuoteOutcome, StoreError> {
+    let stored_request = row.try_get::<JsonValue>("", "request_json")?;
+    if &stored_request != request_json {
+        return Err(StoreError::IdempotencyKeyReused);
+    }
+    Ok(CreateQuoteOutcome::Existing(Box::new(quote_from_row(row)?)))
 }
 
 pub async fn get_quote(
@@ -410,6 +477,10 @@ mod tests {
     fn store_errors_expose_bounded_codes() {
         assert_eq!(StoreError::ContextNotFound.code(), "context_not_found");
         assert_eq!(StoreError::QuoteNotFound.code(), "quote_not_found");
+        assert_eq!(
+            StoreError::IdempotencyKeyReused.code(),
+            "idempotency_key_reused"
+        );
         assert_eq!(
             StoreError::InvalidRecord("test").code(),
             "invalid_stored_record"

@@ -23,6 +23,10 @@ This repository owns HTTP/WebSocket transport, PostgreSQL persistence, and Gemin
 5. Public status progresses through `queued`, `analyzing`, and then `ready` or `failed`.
 6. REST is authoritative. WebSocket events are owner-scoped delivery hints; clients recover durable state through REST after disconnects or process restarts.
 7. A failed quote may be requeued through the owner-scoped retry endpoint.
+8. `POST /api/v1/quotes` accepts an optional UUID `Idempotency-Key`. Replaying
+   the same owner and normalized request returns the original quote; reusing
+   the key for different input fails with `409 idempotency_key_reused` and does
+   not start a second analysis.
 
 The default model is `gemini-3.1-pro-preview` and remains configurable through `GEMINI_MODEL`. Prompts, context, raw model output, internal tokens, bearer tokens, and API keys are never written to application logs or returned in public payloads.
 
@@ -67,6 +71,11 @@ Public JSON uses lowerCamelCase and generated types including:
 
 Public identifiers use `quoteId`; statuses are exactly `queued`, `analyzing`, `ready`, and `failed`. Model-attempt rows, persistence labels, raw prompts/responses, internal context identifiers, service credentials, and tenant internals are not exposed.
 
+The idempotency UUID becomes the quote identifier only after authentication and
+bounded request validation. PostgreSQL resolves concurrent replays in the same
+owner-scoped transaction with `ON CONFLICT DO NOTHING`, compares the stored
+normalized request, and emits the initial event only for the winning insert.
+
 ## PostgreSQL
 
 Apply [`db/schema.sql`](db/schema.sql) through the migration identity, not the runtime service login. The schema provides:
@@ -91,6 +100,10 @@ Required in production:
 - `GEMINI_API_KEY` — server-side Gemini credential.
 
 `GEMINI_MODEL` defaults to `gemini-3.1-pro-preview`. `BIND_ADDRESS` defaults to `0.0.0.0:8080`.
+`CANONICAL_WEB_SERVICE_TOKEN` remains a temporary configuration alias for the
+existing Kubernetes secret mapping; new deployments should use
+`CANONICAL_INTERNAL_AUTH_TOKEN`. The accepted HTTP header remains only
+`x-canonical-internal-token`.
 
 When the Gemini key is absent, health remains available and accepted development requests transition to `failed` with a bounded public problem. No provider error body is returned or logged.
 
