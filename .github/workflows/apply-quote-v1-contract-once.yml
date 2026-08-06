@@ -24,13 +24,13 @@ jobs:
           ref: den-2642/quote-v1-compatibility
           persist-credentials: true
           show-progress: false
-      - name: Install Rust 1.88.0
+      - name: Install the repository-certified Rust toolchain
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
-          rustup override set 1.88.0
-      - name: Apply contract migration and minimally extend the lock
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          rustup override set 1.95.0
+      - name: Apply contract migration and extend the reviewed lock
         shell: bash
         run: |
           set -euo pipefail
@@ -51,27 +51,14 @@ jobs:
           path.write_text(source)
           PY
           python3 scripts/apply_quote_v1_contract.py
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          path = Path('Cargo.toml')
-          source = path.read_text()
-          source, count = re.subn(
-              r'(?m)^(sea-orm\s*=\s*\{[^\n]*\bversion\s*=\s*)"2\.0\.0-rc\.4"',
-              r'\1"=2.0.0-rc.4"',
-              source,
-              count=1,
-          )
-          if count != 1:
-              raise SystemExit('expected reviewed SeaORM RC dependency not found exactly once')
-          path.write_text(source)
-          PY
-          # Preserve the Rust 1.88-compatible SeaORM/SQLx graph while adding
-          # the immutable interface package and chrono feature support.
-          cargo test --all-targets
+          # The existing lock already certifies SeaORM 2.0.1 and SQLx 0.9 on
+          # Rust 1.95. This first unlocked run adds only the immutable interface
+          # dependency and any feature-required entries, then all certification
+          # runs use the resulting lock.
+          cargo test --all-targets --all-features
           cargo fmt --all
-          cargo test --all-targets --locked
-          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --all-targets --all-features --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Commit exact result
         shell: bash
         run: |
