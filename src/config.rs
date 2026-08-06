@@ -3,6 +3,7 @@ use std::{env, str::FromStr, time::Duration};
 use anyhow::Context;
 
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro";
+const DEFAULT_QUOTE_CONTEXT_KEY: &str = "quote-analysis";
 
 #[derive(Clone)]
 pub struct Config {
@@ -80,7 +81,7 @@ impl Config {
             anyhow::bail!("GEMINI_MODEL must be a simple model identifier");
         }
         let quote_context_key =
-            env::var("QUOTE_CONTEXT_KEY").unwrap_or_else(|_| "quote_analysis".to_owned());
+            env::var("QUOTE_CONTEXT_KEY").unwrap_or_else(|_| DEFAULT_QUOTE_CONTEXT_KEY.to_owned());
         if quote_context_key.is_empty()
             || quote_context_key.len() > 128
             || !quote_context_key.bytes().all(|byte| {
@@ -172,10 +173,11 @@ fn validated_http_base(name: &'static str, value: &str) -> anyhow::Result<String
 
 #[cfg(test)]
 mod tests {
-    use super::DEFAULT_GEMINI_MODEL;
+    use super::{DEFAULT_GEMINI_MODEL, DEFAULT_QUOTE_CONTEXT_KEY};
 
     #[test]
-    fn default_gemini_model_stays_on_operator_selected_pro_model() {
+    fn deployment_defaults_stay_aligned_with_the_canonical_quote_contract() {
         assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.6-pro");
+        assert_eq!(DEFAULT_QUOTE_CONTEXT_KEY, "quote-analysis");
     }
 }
