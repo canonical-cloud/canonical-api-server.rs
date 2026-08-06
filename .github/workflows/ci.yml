@@ -71,10 +71,12 @@ jobs:
           assert 'gemini-3.6-pro' not in env_example
 
           gemini = Path('src/gemini.rs').read_text()
-          assert 'redirect(reqwest::redirect::Policy::none())' in gemini
+          assert '.redirect(Policy::none())' in gemini
           assert 'generativelanguage.googleapis.com' in gemini
-          assert 'responseMimeType' in gemini
-          assert 'responseSchema' in gemini
+          assert '"responseFormat"' in gemini
+          assert '"mimeType": "application/json"' in gemini
+          assert '"schema": analysis_schema()' in gemini
+          assert '"temperature": 0.2' not in gemini
 
           schema = Path('db/schema.sql').read_text()
           assert 'ALTER TABLE canonical_quote FORCE ROW LEVEL SECURITY' in schema
