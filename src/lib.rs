@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -99,7 +99,6 @@ impl AppState {
     }
 }
 
-#[must_use]
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     Router::new()
@@ -114,7 +113,10 @@ pub fn build_router(state: AppState) -> Router {
         ]))
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
-        .layer(TimeoutLayer::new(Duration::from_secs(30)))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        ))
         .layer(TraceLayer::new_for_http())
 }
 
