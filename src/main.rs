@@ -19,11 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
     let listener = TcpListener::bind(&config.bind_address).await?;
-    let state = AppState::new(
-        config.internal_auth_token,
-        config.gemini_model,
-        database,
-    );
+    let state = AppState::new(config.internal_auth_token, config.gemini_model, database);
 
     info!(address = %config.bind_address, "canonical API listening");
     axum::serve(listener, build_router(state)).await?;
