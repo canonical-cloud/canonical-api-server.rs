@@ -220,7 +220,7 @@ async fn create_quote(
     let request = request.validate_and_normalize()?;
 
     let quote_id = Uuid::new_v4();
-    let mut record = QuoteRecord {
+    let record = QuoteRecord {
         analysis: None,
         context_record_id: request.context_record_id,
         error_code: None,

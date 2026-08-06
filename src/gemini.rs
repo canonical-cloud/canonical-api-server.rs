@@ -53,7 +53,7 @@ impl GeminiClient {
         })
     }
 
-    pub async fn analyze(
+    pub(crate) async fn analyze(
         &self,
         request: &CreateQuoteRequest,
         context: &CanonicalContext,
