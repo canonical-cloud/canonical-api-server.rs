@@ -51,10 +51,18 @@ jobs:
           path.write_text(source)
           PY
           python3 scripts/apply_quote_v1_contract.py
-          # Preserve the reviewed lock graph. A normal test run adds only the
-          # new immutable interface package and feature-required entries; an
-          # unrestricted `cargo update` would select SeaORM/SQLx releases that
-          # require a newer Rust compiler.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Cargo.toml')
+          source = path.read_text()
+          old = 'sea-orm = { version = "2.0.0-rc.4",'
+          new = 'sea-orm = { version = "=2.0.0-rc.4",'
+          if old not in source:
+              raise SystemExit('expected reviewed SeaORM RC dependency not found')
+          path.write_text(source.replace(old, new, 1))
+          PY
+          # Preserve the Rust 1.88-compatible SeaORM/SQLx graph while adding
+          # the immutable interface package and chrono feature support.
           cargo test --all-targets
           cargo fmt --all
           cargo test --all-targets --locked
