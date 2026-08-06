@@ -2,9 +2,9 @@
 org = "canonical-cloud"
 name = "canonical-api-server"
 version = "0.1.0"
-description = "Canonical quote REST and WebSocket API in Rust"
+description = "Canonical compliance quote REST and WebSocket API"
 license = "MIT"
-keywords = ["api", "axum", "seaorm", "websocket", "compliance"]
+keywords = ["api", "rust", "axum", "seaorm", "compliance", "gemini"]
 language = "rust"
 
 [package.repository]
@@ -32,6 +32,6 @@ adapter = "none"
 dir = ".vendor/.zed"
 
 [scripts]
-test = "cargo test --all-targets"
-lint = "cargo clippy --all-targets -- -D warnings"
+test = "cargo test --all-targets --all-features"
+lint = "cargo clippy --all-targets --all-features -- -D warnings"
 format = "cargo fmt --all -- --check"
