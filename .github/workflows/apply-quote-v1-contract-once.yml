@@ -67,14 +67,11 @@ jobs:
 
           wire = Path('src/wire.rs')
           source = wire.read_text()
-          old = '''    let mut request = CreateQuoteRequest {
-'''
+          old = '    let mut request = CreateQuoteRequest {\n'
           if old not in source:
               raise SystemExit('wire request construction not found')
           source = source.replace(old, '    let request = CreateQuoteRequest {\n', 1)
-          old = '''    request.validate_and_normalize()?;
-    Ok(request)
-'''
+          old = '    request.validate_and_normalize()?;\n    Ok(request)\n'
           if old not in source:
               raise SystemExit('wire request validation return not found')
           source = source.replace(old, '    request.validate_and_normalize()\n', 1)
