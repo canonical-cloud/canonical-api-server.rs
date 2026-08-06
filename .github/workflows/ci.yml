@@ -81,8 +81,15 @@ jobs:
           schema = Path('db/schema.sql').read_text()
           assert 'ALTER TABLE canonical_quote FORCE ROW LEVEL SECURITY' in schema
           assert 'ALTER TABLE canonical_context FORCE ROW LEVEL SECURITY' in schema
+          assert 'canonical_context_one_active_per_owner_idx' in schema
+          assert 'WHERE active = TRUE' in schema
           assert 'canonical_quote_event' in schema
           assert 'canonical_model_attempt' in schema
+
+          persistence = Path('src/persistence.rs').read_text()
+          assert 'WHERE owner_subject = $1' in persistence
+          assert 'request.context_record_id' not in persistence
+          assert 'ORDER BY updated_at DESC, id' in persistence
           PY
 
       - name: Install the pinned Rust toolchain
