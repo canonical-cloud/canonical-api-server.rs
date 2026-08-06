@@ -251,19 +251,3 @@ application-controlled Markdown. Later edits to `canonical_context` cannot
 silently alter the inputs that produced an existing quote.
 """,
 )
-
-ci = Path(".github/workflows/ci.yml")
-replace_once(
-    ci,
-    """          assert 'ALTER TABLE canonical_context FORCE ROW LEVEL SECURITY' in schema
-          assert 'canonical_quote_event' in schema
-""",
-    """          assert 'ALTER TABLE canonical_context FORCE ROW LEVEL SECURITY' in schema
-          assert 'canonical_context_one_active_per_owner_idx' in schema
-          assert 'WHERE active = TRUE' in schema
-          persistence = Path('src/persistence.rs').read_text()
-          assert 'WHERE owner_subject = $1' in persistence
-          assert 'request.context_record_id' not in persistence
-          assert 'canonical_quote_event' in schema
-""",
-)
