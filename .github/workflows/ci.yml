@@ -63,12 +63,12 @@ jobs:
           ):
               assert required in source, required
 
-          assert 'pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";' in source
-          assert 'gemini-3.6-pro' not in source
+          assert 'pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro";' in source
+          assert 'gemini-3.1-pro-preview' not in source
           env_example = Path('.env.example').read_text()
-          assert 'GEMINI_MODEL=gemini-3.1-pro-preview' in env_example
+          assert 'GEMINI_MODEL=gemini-3.6-pro' in env_example
           assert 'CANONICAL_INTERNAL_AUTH_TOKEN=' in env_example
-          assert 'gemini-3.6-pro' not in env_example
+          assert 'gemini-3.1-pro-preview' not in env_example
 
           gemini = Path('src/gemini.rs').read_text()
           assert '.redirect(Policy::none())' in gemini
@@ -163,5 +163,5 @@ jobs:
           assert health['status'] == 'ok'
           assert health['databaseConfigured'] is False
           assert health['geminiConfigured'] is False
-          assert health['geminiModel'] == 'gemini-3.1-pro-preview'
+          assert health['geminiModel'] == 'gemini-3.6-pro'
           PY
