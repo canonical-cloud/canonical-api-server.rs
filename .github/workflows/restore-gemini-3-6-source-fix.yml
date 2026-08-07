@@ -1,0 +1,63 @@
+name: Restore Gemini 3.6 Pro source default
+
+on:
+  push:
+    branches:
+      - agent/restore-gemini-3-6-default
+
+permissions:
+  contents: write
+
+concurrency:
+  group: restore-gemini-3-6-source-default
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[model-repair]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the exact repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/restore-gemini-3-6-default
+          persist-credentials: true
+
+      - name: Restore the reviewed source and documentation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          old = 'gemini-3.1-pro-preview'
+          new = 'gemini-3.6-pro'
+          expected = {
+              Path('.env.example'): 1,
+              Path('README.md'): 1,
+              Path('src/lib.rs'): 2,
+          }
+          for path, expected_count in expected.items():
+              text = path.read_text()
+              count = text.count(old)
+              if count != expected_count:
+                  raise SystemExit(
+                      f'expected {expected_count} occurrence(s) of {old} in {path}, found {count}'
+                  )
+              path.write_text(text.replace(old, new))
+              print(f'updated {path}: {count} occurrence(s)')
+          PY
+          git diff --check
+          ! git grep -n -- 'gemini-3.1-pro-preview' -- .env.example README.md src/lib.rs
+          git grep -n -- 'gemini-3.6-pro' -- .env.example README.md src/lib.rs
+
+      - name: Commit the source-only repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .env.example README.md src/lib.rs
+          git commit -m 'fix: restore Gemini 3.6 Pro default [model-repair]'
+          git push origin HEAD:agent/restore-gemini-3-6-default
