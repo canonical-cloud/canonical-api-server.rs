@@ -1,4 +1,4 @@
-# canonical-api-server.rs
+# Canonical quote API
 
 Rust REST and WebSocket boundary for `api.canonical.plus`.
 
@@ -7,10 +7,18 @@ Rust REST and WebSocket boundary for `api.canonical.plus`.
 ## Contract authority
 
 The public quote v1 wire contract is generated from `canonical-cloud/canonical-interfaces` at immutable revision `3415d6d97721b18ee6734659d73a95ff3d35a151`.
+Axum and SeaORM service for authenticated Canonical quote analysis. It combines a versioned Markdown playbook with the active `canonical_context` PostgreSQL record, requests structured analysis from Gemini, persists the result, and broadcasts owner-scoped status events over WebSockets.
 
-```text
-canonical-interfaces → canonical-lib → canonical-api-server.rs
-```
+## Routes
+
+| Route | Purpose |
+| --- | --- |
+| `GET /healthz` | Process health |
+| `GET /readyz` | PostgreSQL readiness |
+| `POST /v1/quotes` | Validate, analyze, and save a quote |
+| `GET /v1/quotes` | List the signed-in user's quotes |
+| `GET /v1/quotes/{id}` | Read one owned quote |
+| `GET /ws/quotes` | Owner-scoped quote status events |
 
 This repository owns HTTP/WebSocket transport, PostgreSQL persistence, and Gemini provider orchestration. It does not publish a second request, response, status, or framework model under quote v1. Internal persistence and provider metadata are mapped into the generated public types before a response leaves the service.
 
@@ -93,8 +101,26 @@ Required in production:
 `GEMINI_MODEL` defaults to `gemini-3.1-pro-preview`. `BIND_ADDRESS` defaults to `0.0.0.0:8080`.
 
 When the Gemini key is absent, health remains available and accepted development requests transition to `failed` with a bounded public problem. No provider error body is returned or logged.
+The API is not directly internet-trusted. The Canonical Cloudflare Worker removes incoming identity headers, verifies the user's shared-auth JWT, and adds a short-lived HMAC assertion. The API verifies that assertion over the exact method and path before serving protected routes.
 
-## Develop
+## Configuration
+
+Required environment variables:
+
+- `DATABASE_URL`
+- `GEMINI_API_KEY`
+- `ORIGIN_ASSERTION_SECRET` (at least 32 bytes and identical to the Worker secret)
+
+Optional variables:
+
+- `BIND_ADDR` (default `0.0.0.0:8081`)
+- `GEMINI_MODEL` (default `gemini-3.1-pro-preview`)
+- `QUOTE_CONTEXT_MARKDOWN_PATH` (default `context/quote-analysis.md`)
+- `ORIGIN_ASSERTION_MAX_AGE_SECONDS` (default `60`)
+
+Apply [`db/schema.sql`](db/schema.sql) to the Canonical Supabase/PostgreSQL database before deploying. Kubernetes resources are in [`deploy/k8s/all.yaml`](deploy/k8s/all.yaml); replace the image digest and provide the referenced ExternalSecret values through the cluster secret store.
+
+## Local verification
 
 The repository declares and certifies Rust 1.95.
 
@@ -130,3 +156,6 @@ Application CI formats, tests, lints, builds, and smoke-tests the image. The Can
 - deploy the Canonical Shared Auth realm and exact verification endpoint;
 - certify direct bearer and web-BFF authentication, owner isolation, revocation, provider failure, restart recovery, list/retry, and WebSocket reconnect behavior;
 - implement durable cross-replica leasing and stale-claim recovery under DEN-2599 before treating in-flight analysis as replica-failure resilient.
+cargo fmt -- --check
+cargo test --offline
+```

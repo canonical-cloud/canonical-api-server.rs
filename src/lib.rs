@@ -61,11 +61,38 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let internal_auth_token = env::var("CANONICAL_INTERNAL_AUTH_TOKEN")
-            .map_err(|_| ConfigError::MissingInternalAuthToken)?;
-        if internal_auth_token.trim().len() < 32 {
-            return Err(ConfigError::WeakInternalAuthToken);
+    fn from_env() -> Result<Self, ApiError> {
+        let bind_addr = env_or("BIND_ADDR", "0.0.0.0:8081")
+            .parse()
+            .map_err(|_| ApiError::Config("BIND_ADDR"))?;
+        let database_url = required_env("DATABASE_URL")?;
+        let database_max_connections = env_or("DATABASE_MAX_CONNECTIONS", "10")
+            .parse()
+            .map_err(|_| ApiError::Config("DATABASE_MAX_CONNECTIONS"))?;
+        if !(1..=50).contains(&database_max_connections) {
+            return Err(ApiError::Config("DATABASE_MAX_CONNECTIONS"));
+        }
+        let gemini_api_key = required_env("GEMINI_API_KEY")?;
+        let gemini_model = env_or("GEMINI_MODEL", "gemini-3.1-pro-preview");
+        if !gemini_model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err(ApiError::Config("GEMINI_MODEL"));
+        }
+        let quote_context_path = PathBuf::from(env_or(
+            "QUOTE_CONTEXT_MARKDOWN_PATH",
+            "context/quote-analysis.md",
+        ));
+        let origin_assertion_secret = required_env("ORIGIN_ASSERTION_SECRET")?.into_bytes();
+        if origin_assertion_secret.len() < 32 {
+            return Err(ApiError::Config("ORIGIN_ASSERTION_SECRET"));
+        }
+        let assertion_max_age_seconds = env_or("ORIGIN_ASSERTION_MAX_AGE_SECONDS", "30")
+            .parse()
+            .map_err(|_| ApiError::Config("ORIGIN_ASSERTION_MAX_AGE_SECONDS"))?;
+        if !(5..=60).contains(&assertion_max_age_seconds) {
+            return Err(ApiError::Config("ORIGIN_ASSERTION_MAX_AGE_SECONDS"));
         }
 
         let gemini_api_key = env::var("GEMINI_API_KEY").ok();
@@ -140,10 +167,36 @@ impl fmt::Display for ConfigError {
                 "CANONICAL_INTERNAL_AUTH_TOKEN must contain at least 32 non-whitespace bytes",
             ),
         }
+        validate_list(&mut self.data_types, 12, 80)?;
+        validate_list(&mut self.cloud_providers, 12, 80)?;
+        Ok(())
     }
 }
 
-impl std::error::Error for ConfigError {}
+fn bounded_text(value: &str, minimum: usize, maximum: usize) -> Result<String, ApiError> {
+    let output = value.trim().to_owned();
+    let count = output.chars().count();
+    if count < minimum || count > maximum || output.contains('\0') {
+        return Err(ApiError::Validation("text field"));
+    }
+    Ok(output)
+}
+
+fn validate_list(
+    values: &mut Vec<String>,
+    maximum_items: usize,
+    maximum_chars: usize,
+) -> Result<(), ApiError> {
+    if values.len() > maximum_items {
+        return Err(ApiError::Validation("list field"));
+    }
+    for value in values.iter_mut() {
+        *value = bounded_text(value, 1, maximum_chars)?;
+    }
+    values.sort();
+    values.dedup();
+    Ok(())
+}
 
 fn is_valid_model_name(value: &str) -> bool {
     let trimmed = value.trim();
@@ -224,6 +277,14 @@ pub fn build_router(state: AppState) -> Router {
             Duration::from_secs(90),
         ))
         .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
+    tracing::info!(address = %config.bind_addr, "canonical API listening");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    Ok(())
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -280,6 +341,39 @@ async fn create_quote(
             context
         }
     };
+    let analysis_json = serde_json::to_value(&analysis).map_err(|_| ApiError::Internal)?;
+    let updated_at = Utc::now();
+    state
+        .db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r#"UPDATE quote_request
+               SET status = 'complete', analysis = $2, model = $3, updated_at = $4
+               WHERE id = $1 AND owner_id = $5"#,
+            [
+                quote_id.into(),
+                analysis_json.clone().into(),
+                state.config.gemini_model.clone().into(),
+                updated_at.into(),
+                user.user_id.into(),
+            ],
+        ))
+        .await?;
+    emit(&state, user.user_id, quote_id, "complete");
+    Ok((
+        StatusCode::CREATED,
+        Json(QuoteRecord {
+            id: quote_id,
+            owner_id: user.user_id,
+            status: "complete".to_owned(),
+            intake: intake_json,
+            analysis: Some(analysis_json),
+            model: Some(state.config.gemini_model.clone()),
+            created_at: now,
+            updated_at,
+        }),
+    ))
+}
 
     state.quotes.write().await.insert(quote_id, record.clone());
     publish_event(&state, &record);
@@ -493,15 +587,15 @@ async fn quote_events(
     let subject = state.auth.authenticate(&headers).await?;
     find_quote(&state, quote_id, &subject).await?;
 
-    Ok(upgrade.on_upgrade(move |socket| stream_quote_events(socket, state, quote_id, subject)))
+async fn quote_websocket(
+    State(state): State<AppState>,
+    user: EdgeUser,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| websocket_loop(socket, state, user.user_id))
 }
 
-async fn stream_quote_events(
-    mut socket: WebSocket,
-    state: AppState,
-    quote_id: Uuid,
-    owner_subject: String,
-) {
+async fn websocket_loop(socket: WebSocket, state: AppState, owner_id: Uuid) {
     let mut events = state.events.subscribe();
     if let Ok(record) = find_quote(&state, quote_id, &owner_subject).await {
         if send_json(&mut socket, &wire::detail(&record))
@@ -527,15 +621,10 @@ async fn stream_quote_events(
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-            incoming = socket.next() => {
+            incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                    Some(Ok(Message::Ping(payload))) => {
-                        if socket.send(Message::Pong(payload)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(_)) => {}
+                    _ => {}
                 }
             }
         }
@@ -603,10 +692,7 @@ impl CreateQuoteRequest {
             .as_deref()
             .is_some_and(|notes| notes.len() > MAX_NOTES_BYTES)
         {
-            return Err(ApiError::bad_request(
-                "notes_too_large",
-                "notes must not exceed 32768 bytes",
-            ));
+            signal.recv().await;
         }
         self.notes = self
             .notes
@@ -779,10 +865,12 @@ struct ErrorBody {
     request_id: String,
 }
 
-#[derive(Debug)]
-struct ApiError {
-    body: ErrorBody,
-    status: StatusCode,
+fn required_env(name: &'static str) -> Result<String, ApiError> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or(ApiError::Config(name))
 }
 
 impl ApiError {
