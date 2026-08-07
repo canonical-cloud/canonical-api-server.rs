@@ -1,4 +1,38 @@
-#![forbid(unsafe_code)]
+mod auth;
+mod config;
+// `quote` imports `SinkExt` for compatibility with alternate WebSocket sink implementations;
+// Axum 0.8 exposes an inherent `send` method, so the pinned toolchain sees it as unused.
+#[allow(unused_imports)]
+mod quote;
+
+use std::{sync::Arc, time::Duration};
+
+use anyhow::Context;
+use axum::{
+    extract::{DefaultBodyLimit, State},
+    http::{header, HeaderName, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, DbErr,
+    Statement,
+};
+use serde_json::json;
+use thiserror::Error;
+use tokio::sync::{broadcast, Semaphore};
+use tower_http::{
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    sensitive_headers::SetSensitiveRequestHeadersLayer,
+    set_header::SetResponseHeaderLayer,
+    trace::TraceLayer,
+};
+
+pub use config::Config;
+pub(crate) use quote::QuoteEvent;
+
+pub const SERVICE_NAME: &str = "canonical-api-server";
 
 mod auth;
 mod gemini;
@@ -631,10 +665,10 @@ async fn websocket_loop(socket: WebSocket, state: AppState, owner_id: Uuid) {
     }
 }
 
-async fn send_json<T: Serialize>(socket: &mut WebSocket, value: &T) -> Result<(), ()> {
-    let payload = serde_json::to_string(value).map_err(|_| ())?;
-    socket
-        .send(Message::Text(payload.into()))
+async fn migrate() -> anyhow::Result<()> {
+    let database_url = std::env::var("MIGRATION_DATABASE_URL")
+        .context("MIGRATION_DATABASE_URL is required for migrate")?;
+    let db = connect_database(&database_url, 2)
         .await
         .map_err(|_| ())
 }
@@ -903,13 +937,15 @@ impl ApiError {
             },
             status,
         }
-    }
-}
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.status, Json(self.body)).into_response()
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
     }
+    tracing::info!("shutdown signal received");
 }
 
 #[cfg(test)]
