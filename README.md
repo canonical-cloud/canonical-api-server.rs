@@ -40,7 +40,7 @@ normalized intake fields and the owner-scoped `canonical_context` row.
 6. REST lookup and the WebSocket stream are owner scoped. WebSocket broadcasts
    are hints; a restarted process recovers the current quote from PostgreSQL.
 
-The default model is `gemini-3.1-pro-preview` and remains configurable through
+The default model is `gemini-3.6-pro` and remains configurable through
 `GEMINI_MODEL`. Requests use the Google API-key header, a fixed Google API
 origin, disabled redirects, bounded responses, retries for transport/429/5xx
 failures, and a small circuit breaker. Prompts, context, model output, internal
