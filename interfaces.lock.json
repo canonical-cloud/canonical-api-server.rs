@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "canonical_lib": {
     "repository": "canonical-cloud/canonical-lib",
     "commit": "f0add30d4cc7e6825d24565e1db115751f833966"
