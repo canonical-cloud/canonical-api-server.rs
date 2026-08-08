@@ -10,11 +10,14 @@ use uuid::Uuid;
 
 use crate::{ApiError, APPLICATION_CONTEXT_MARKDOWN, MAX_MARKDOWN_CONTEXT_BYTES};
 
-pub const CANONICAL_INTERFACES_REVISION: &str =
+#[cfg(test)]
+const CANONICAL_INTERFACES_REVISION: &str =
     "4c6ca63ca24fa214a1cb1a917ac27f1d5265916a";
-pub const CANONICAL_LIB_REVISION: &str =
+#[cfg(test)]
+const CANONICAL_LIB_REVISION: &str =
     "f0add30d4cc7e6825d24565e1db115751f833966";
-pub const QUOTE_REQUEST_FIXTURE_BLOB: &str =
+#[cfg(test)]
+const QUOTE_REQUEST_FIXTURE_BLOB: &str =
     "fe8bf1ad08a7152d44ead22ee0d082842d28b208";
 
 const REQUEST_FIELDS: &[&str] = &[
@@ -100,7 +103,7 @@ pub(crate) fn quote_submission_response(
     })
 }
 
-pub(crate) fn now_rfc3339() -> Result<String, ApiError> {
+fn now_rfc3339() -> Result<String, ApiError> {
     OffsetDateTime::now_utc().format(&Rfc3339).map_err(|_| {
         ApiError::service_unavailable(
             "internal",
