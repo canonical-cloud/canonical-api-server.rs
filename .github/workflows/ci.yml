@@ -111,8 +111,13 @@ jobs:
           assert 'repository: declarative-migrations/declarative-postgres-migrate.rs' in declarative_workflow
           assert f'ref: {dpm_revision}' in declarative_workflow
           assert fixture['organizationName'] == 'Example Company'
-          assert fixture['contactEmail'] == 'taylor@example.com'
-          assert fixture['frameworks'] == ['soc2', 'iso27001']
+          assert fixture['contactEmail'] == 'security@example.com'
+          assert fixture['frameworks'] == [
+              'soc2_type_2',
+              'nist_csf_2',
+              'nist_800_53',
+              'hipaa',
+          ]
           assert fixture['answersVersion'] == 1
           assert 'include_str!("../fixtures/quote/v1/request.json")' in library
           assert '/api/v1/quotes' in library
