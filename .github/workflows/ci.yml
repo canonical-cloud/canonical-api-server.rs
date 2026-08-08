@@ -27,6 +27,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import json
+          import subprocess
           import tomllib
           from pathlib import Path
 
@@ -37,6 +39,25 @@ jobs:
               'canonical-cloud/canonical-lib',
           }
           assert Path('.zpkg.lock').read_text() == 'version = 1\n'
+
+          interface_lock = json.loads(Path('interfaces.lock.json').read_text())
+          assert interface_lock['schema_version'] == 1
+          assert interface_lock['canonical_lib']['commit'] == \
+              'f0add30d4cc7e6825d24565e1db115751f833966'
+          assert interface_lock['canonical_interfaces']['commit'] == \
+              '4c6ca63ca24fa214a1cb1a917ac27f1d5265916a'
+          fixture = Path('fixtures/quote/v1/request.json')
+          expected_blob = interface_lock['canonical_interfaces'][\
+              'quote_request_fixture']['git_blob']
+          actual_blob = subprocess.check_output(
+              ['git', 'hash-object', str(fixture)], text=True
+          ).strip()
+          assert actual_blob == expected_blob == \
+              'fe8bf1ad08a7152d44ead22ee0d082842d28b208'
+
+          cargo = Path('Cargo.toml').read_text()
+          assert 'canonical-lib' in cargo
+          assert 'f0add30d4cc7e6825d24565e1db115751f833966' in cargo
 
           dockerfile = Path('Dockerfile').read_text()
           assert 'FROM gcr.io/distroless/cc-debian12:nonroot' in dockerfile
