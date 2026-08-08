@@ -1,83 +1,65 @@
-name: Materialize Canonical quote v1 contract
+name: Publish Canonical quote v1 contract
 
 on:
   push:
     branches: [agent/quote-v1-contract-20260808]
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
 jobs:
-  materialize:
+  publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - name: Check out the dedicated agent branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
-          persist-credentials: false
+          persist-credentials: true
 
-      - name: Verify exact transformation inputs
+      - name: Download the checksum-verified materialization
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = 'refs/heads/agent/quote-v1-contract-20260808'
-          test "$(git hash-object src/lib.rs)" = 915ab3f78657fe82b85d5761edb23e3d67d18b92
-          test "$(git hash-object src/persistence.rs)" = d8ee0264d25202bbe3a36ed72e03fc885b4d1a3d
-          test "$(git hash-object src/gemini.rs)" = 13b5f5fa3f9f45427d8b907beab048aeec1c1c91
-          test "$(git hash-object Cargo.toml)" = 2fa9b1bdc9a0680d376ceaacf40b17308aee1522
-          test "$(git hash-object .github/workflows/ci.yml)" = 3361e24b8156ec2381fd7e190b565a69ce37d203
-          test "$(git hash-object fixtures/quote/v1/request.json)" = \
-            fe8bf1ad08a7152d44ead22ee0d082842d28b208
-          python3 -m py_compile \
+          gh run download 31280192025 \
+            --repo canonical-cloud/canonical-api-server.rs \
+            --name canonical-quote-v1-materialized \
+            --dir "$RUNNER_TEMP/materialized"
+          cd "$RUNNER_TEMP/materialized"
+          sed 's#  materialized/#  #' SHA256SUMS | sha256sum -c -
+
+      - name: Publish validated source and remove temporary machinery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/materialized/Cargo.toml" Cargo.toml
+          cp "$RUNNER_TEMP/materialized/Cargo.lock" Cargo.lock
+          cp "$RUNNER_TEMP/materialized/src/lib.rs" src/lib.rs
+          cp "$RUNNER_TEMP/materialized/src/persistence.rs" src/persistence.rs
+          cp "$RUNNER_TEMP/materialized/src/gemini.rs" src/gemini.rs
+          cp "$RUNNER_TEMP/materialized/.github/workflows/ci.yml" .github/workflows/ci.yml
+          rm -f \
+            .github/workflows/materialize-quote-v1-contract.yml \
+            patches/quote-v1-contract.patch \
             scripts/materialize-quote-v1-contract.py \
             scripts/materialize-quote-v1-test-fixtures.py
-
-      - name: Materialize the reviewed contract adapter
-        run: |
-          python3 scripts/materialize-quote-v1-contract.py
-          python3 scripts/materialize-quote-v1-test-fixtures.py
-
-      - name: Install the pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          toolchain: '1.95.0'
-          components: rustfmt, clippy
-
-      - name: Resolve the reviewed source graph and validate it
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo check --all-targets --all-features
-          cargo fmt --all
-          cargo test --all-targets --all-features --locked
-          cargo clippy --all-targets --all-features --locked -- -D warnings
-          grep -F 'git+https://github.com/canonical-cloud/canonical-lib?rev=f0add30d4cc7e6825d24565e1db115751f833966#f0add30d4cc7e6825d24565e1db115751f833966' Cargo.lock
-          grep -F 'git+https://github.com/canonical-cloud/canonical-interfaces?rev=4c6ca63ca24fa214a1cb1a917ac27f1d5265916a#4c6ca63ca24fa214a1cb1a917ac27f1d5265916a' Cargo.lock
+          rmdir patches 2>/dev/null || true
+          git diff --check
           test "$(git hash-object fixtures/quote/v1/request.json)" = \
             fe8bf1ad08a7152d44ead22ee0d082842d28b208
-          git diff --check
+          grep -F 'git+https://github.com/canonical-cloud/canonical-lib?rev=f0add30d4cc7e6825d24565e1db115751f833966#f0add30d4cc7e6825d24565e1db115751f833966' Cargo.lock
+          grep -F 'git+https://github.com/canonical-cloud/canonical-interfaces?rev=4c6ca63ca24fa214a1cb1a917ac27f1d5265916a#4c6ca63ca24fa214a1cb1a917ac27f1d5265916a' Cargo.lock
 
-      - name: Collect materialized files
+      - name: Commit the exact validated bytes
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p materialized/src materialized/.github/workflows
-          cp Cargo.toml Cargo.lock materialized/
-          cp src/lib.rs src/persistence.rs src/gemini.rs materialized/src/
-          cp .github/workflows/ci.yml materialized/.github/workflows/
-          find materialized -type f ! -name SHA256SUMS -print0 \
-            | sort -z \
-            | xargs -0 sha256sum \
-            > materialized/SHA256SUMS
-
-      - name: Upload the generated lock and reviewed source bytes
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: canonical-quote-v1-materialized
-          path: materialized
-          include-hidden-files: true
-          retention-days: 7
-          if-no-files-found: error
+          git config user.name 'canonical-contract-bot'
+          git config user.email 'canonical-contract-bot@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: converge API on canonical quote v1 contract'
+          git push origin HEAD:agent/quote-v1-contract-20260808
