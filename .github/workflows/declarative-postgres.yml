@@ -1,0 +1,112 @@
+name: declarative PostgreSQL
+
+on:
+  pull_request:
+    paths:
+      - "db/**"
+      - "scripts/test-declarative-postgres.sh"
+      - "scripts/verify-declarative-db-contract.py"
+      - "src/persistence.rs"
+      - ".env.example"
+      - "README.md"
+      - ".github/workflows/declarative-postgres.yml"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "db/**"
+      - "scripts/test-declarative-postgres.sh"
+      - "scripts/verify-declarative-db-contract.py"
+      - "src/persistence.rs"
+      - ".env.example"
+      - "README.md"
+      - ".github/workflows/declarative-postgres.yml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-api-declarative-postgres-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres-17:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out Canonical source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the reviewed declarative migrator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: declarative-migrations/declarative-postgres-migrate.rs
+          ref: d05a7880987ddaa271fa88b52c787390ef12b899
+          path: vendor/declarative-postgres-migrate.rs
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.95.0"
+
+      - name: Restore migrator build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: vendor/declarative-postgres-migrate.rs -> target
+          key: canonical-api-dpm-postgres-17-rust-1.95
+
+      - name: Install PostgreSQL client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Validate the declarative database contract
+        run: python3 scripts/verify-declarative-db-contract.py
+
+      - name: Build the reviewed dpm executable
+        id: dpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --locked \
+            --release \
+            --manifest-path vendor/declarative-postgres-migrate.rs/Cargo.toml \
+            --bin dpm
+          echo "path=$PWD/vendor/declarative-postgres-migrate.rs/target/release/dpm" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Certify PostgreSQL roles, RLS, convergence, drift, and data preservation
+        env:
+          DPM_BIN: ${{ steps.dpm.outputs.path }}
+          POSTGRES_ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres
+        run: scripts/test-declarative-postgres.sh
+
+      - name: Upload bounded failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-quote-declarative-postgres-${{ github.run_id }}
+          path: artifacts/declarative-postgres
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "githubOwner": "canonical-cloud",
+  "project": "quote",
+  "namespaceId": "canonical_cloud__quote",
+  "database": {
+    "engine": "postgresql",
+    "minimumMajorVersion": 17,
+    "placement": "canonical-only",
+    "schema": "canonical_cloud__quote",
+    "publicObjectPolicy": "forbidden"
+  },
+  "services": {
+    "apiOwner": "canonical-cloud/canonical-api-server.rs",
+    "webCaller": "canonical-cloud/canonical-web-server.rs"
+  },
+  "roles": {
+    "migrator": "canonical_cloud__quote__migrator",
+    "apiRuntime": "canonical_cloud__quote__api_rw",
+    "webRuntime": "canonical_cloud__quote__web_ro"
+  },
+  "access": {
+    "apiRuntime": [
+      "SELECT",
+      "INSERT",
+      "UPDATE"
+    ],
+    "webRuntime": [],
+    "ddlOwner": "canonical_cloud__quote__migrator"
+  },
+  "declarativeMigration": {
+    "tool": "declarative-migrations/declarative-postgres-migrate.rs",
+    "revision": "d05a7880987ddaa271fa88b52c787390ef12b899",
+    "source": "db/schema.sql",
+    "sourceSha256": "1933121f6db97e53ea6b51ef3dcf63c77c717839a92281086be454874e41da4a",
+    "bootstrap": "db/bootstrap.sql",
+    "grants": "db/grants.sql"
+  }
+}
