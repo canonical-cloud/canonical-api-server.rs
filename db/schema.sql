@@ -1,8 +1,9 @@
 -- Canonical quote persistence for PostgreSQL.
 --
--- Apply through the reviewed Canonical migration identity. The runtime login
--- must be a non-owner, non-superuser, non-BYPASSRLS role with only the grants
--- listed at the end of this file.
+-- Reconcile this desired schema with declarative-postgres-migrate (dpm) by
+-- using the reviewed Canonical migration identity. The runtime login must be a
+-- non-owner, non-superuser, non-BYPASSRLS role. Apply db/runtime-grants.sql only
+-- after that role exists and this schema has converged.
 
 BEGIN;
 
@@ -11,7 +12,8 @@ CREATE TABLE IF NOT EXISTS canonical_context (
     owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
     name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
     context_markdown text NOT NULL DEFAULT '',
-    context_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    context_json jsonb NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(context_json) = 'object'),
     active boolean NOT NULL DEFAULT TRUE,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -22,16 +24,18 @@ CREATE TABLE IF NOT EXISTS canonical_quote (
     id uuid PRIMARY KEY,
     owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
     context_record_id uuid NOT NULL,
-    request_json jsonb NOT NULL,
+    request_json jsonb NOT NULL CHECK (jsonb_typeof(request_json) = 'object'),
     application_context_markdown text NOT NULL,
     context_snapshot_markdown text NOT NULL,
-    context_snapshot_json jsonb NOT NULL,
+    context_snapshot_json jsonb NOT NULL
+        CHECK (jsonb_typeof(context_snapshot_json) = 'object'),
     gemini_model text NOT NULL CHECK (char_length(gemini_model) BETWEEN 1 AND 128),
     status text NOT NULL CHECK (status IN ('queued', 'analyzing', 'completed', 'failed')),
-    analysis_json jsonb,
+    analysis_json jsonb CHECK (analysis_json IS NULL OR jsonb_typeof(analysis_json) = 'object'),
     error_code text CHECK (error_code IS NULL OR char_length(error_code) BETWEEN 1 AND 120),
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT canonical_quote_id_owner_unique UNIQUE (id, owner_subject),
     CONSTRAINT canonical_quote_context_owner_fk
         FOREIGN KEY (context_record_id, owner_subject)
         REFERENCES canonical_context (id, owner_subject)
@@ -40,16 +44,21 @@ CREATE TABLE IF NOT EXISTS canonical_quote (
 
 CREATE TABLE IF NOT EXISTS canonical_quote_event (
     sequence_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    quote_id uuid NOT NULL REFERENCES canonical_quote (id) ON DELETE CASCADE,
+    quote_id uuid NOT NULL,
     owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
     status text NOT NULL CHECK (status IN ('queued', 'analyzing', 'completed', 'failed')),
-    details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+    details_json jsonb NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(details_json) = 'object'),
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT canonical_quote_event_quote_owner_fk
+        FOREIGN KEY (quote_id, owner_subject)
+        REFERENCES canonical_quote (id, owner_subject)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS canonical_model_attempt (
     id uuid PRIMARY KEY,
-    quote_id uuid NOT NULL REFERENCES canonical_quote (id) ON DELETE CASCADE,
+    quote_id uuid NOT NULL,
     owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
     provider text NOT NULL DEFAULT 'google-gemini' CHECK (provider = 'google-gemini'),
     model text NOT NULL CHECK (char_length(model) BETWEEN 1 AND 128),
@@ -57,10 +66,17 @@ CREATE TABLE IF NOT EXISTS canonical_model_attempt (
     error_code text CHECK (error_code IS NULL OR char_length(error_code) BETWEEN 1 AND 120),
     started_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at timestamptz,
-    CHECK (
+    CONSTRAINT canonical_model_attempt_status_finished_check CHECK (
         (status = 'started' AND finished_at IS NULL)
         OR (status IN ('completed', 'failed') AND finished_at IS NOT NULL)
-    )
+    ),
+    CONSTRAINT canonical_model_attempt_time_order_check CHECK (
+        finished_at IS NULL OR finished_at >= started_at
+    ),
+    CONSTRAINT canonical_model_attempt_quote_owner_fk
+        FOREIGN KEY (quote_id, owner_subject)
+        REFERENCES canonical_quote (id, owner_subject)
+        ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS canonical_context_owner_active_idx
@@ -132,18 +148,5 @@ COMMENT ON TABLE canonical_quote_event IS
     'Append-only status events; WebSocket broadcasts are disposable projections.';
 COMMENT ON TABLE canonical_model_attempt IS
     'Provider attempt metadata only; raw prompts and API keys are never stored here.';
-
--- Deployment-owned grants (replace canonical_api_server only if the reviewed
--- runtime role has a different exact name):
---
--- GRANT SELECT, INSERT, UPDATE ON canonical_context TO canonical_api_server;
--- GRANT SELECT, INSERT, UPDATE ON canonical_quote TO canonical_api_server;
--- GRANT SELECT, INSERT ON canonical_quote_event TO canonical_api_server;
--- GRANT SELECT, INSERT, UPDATE ON canonical_model_attempt TO canonical_api_server;
--- GRANT USAGE, SELECT ON SEQUENCE canonical_quote_event_sequence_id_seq
---     TO canonical_api_server;
---
--- Do not grant DELETE, TRUNCATE, table ownership, schema ownership, SUPERUSER,
--- role membership, or BYPASSRLS to the runtime login.
 
 COMMIT;
