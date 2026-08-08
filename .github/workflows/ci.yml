@@ -103,8 +103,10 @@ jobs:
           assert fixture['answersVersion'] == 1
           assert 'include_str!("../fixtures/quote/v1/request.json")' in library
           assert '/api/v1/quotes' in library
-          assert 'DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro"' in library
-          assert 'GEMINI_MODEL=gemini-3.6-pro' in env_example
+          assert 'DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-flash"' in library
+          assert 'gemini-3.6-pro' not in library
+          assert 'GEMINI_MODEL=gemini-3.6-flash' in env_example
+          assert 'gemini-3.6-pro' not in env_example
           assert '"thinkingLevel": "high"' in gemini
           assert '"responseFormat"' in gemini
           assert 'analysis_schema()' in gemini
@@ -212,5 +214,5 @@ jobs:
           assert health['service'] == 'canonical-api-server'
           assert health['databaseConfigured'] is False
           assert health['geminiConfigured'] is False
-          assert health['geminiModel'] == 'gemini-3.6-pro'
+          assert health['geminiModel'] == 'gemini-3.6-flash'
           PY
