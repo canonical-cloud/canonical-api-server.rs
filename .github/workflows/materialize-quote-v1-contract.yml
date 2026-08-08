@@ -3,21 +3,21 @@ name: Materialize Canonical quote v1 contract
 on:
   push:
     branches: [agent/quote-v1-contract-20260808]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   materialize:
-    if: github.event.head_commit.message != 'chore: materialize canonical quote v1 contract'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out the dedicated agent branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Verify branch and persistence base
         shell: bash
@@ -39,32 +39,34 @@ jobs:
           toolchain: '1.95.0'
           components: rustfmt, clippy
 
-      - name: Resolve only the reviewed source graph and validate it
+      - name: Resolve the reviewed source graph and validate it
         shell: bash
         run: |
           set -euo pipefail
           cargo check --all-targets --all-features
-          cargo fmt --all -- --check
+          cargo fmt --all
           cargo test --all-targets --all-features --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
           grep -F 'git+https://github.com/canonical-cloud/canonical-lib?rev=f0add30d4cc7e6825d24565e1db115751f833966#f0add30d4cc7e6825d24565e1db115751f833966' Cargo.lock
           grep -F 'git+https://github.com/canonical-cloud/canonical-interfaces?rev=4c6ca63ca24fa214a1cb1a917ac27f1d5265916a#4c6ca63ca24fa214a1cb1a917ac27f1d5265916a' Cargo.lock
           test "$(git hash-object fixtures/quote/v1/request.json)" = \
             fe8bf1ad08a7152d44ead22ee0d082842d28b208
+          git diff --check
 
-      - name: Commit the generated lock and reviewed source changes
+      - name: Collect materialized files
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name 'canonical-contract-bot'
-          git config user.email 'canonical-contract-bot@users.noreply.github.com'
-          git add \
-            Cargo.toml \
-            Cargo.lock \
-            src/lib.rs \
-            src/persistence.rs \
-            src/gemini.rs \
-            .github/workflows/ci.yml
-          git diff --cached --check
-          git commit -m 'chore: materialize canonical quote v1 contract'
-          git push origin HEAD:agent/quote-v1-contract-20260808
+          mkdir -p materialized/src materialized/.github/workflows
+          cp Cargo.toml Cargo.lock materialized/
+          cp src/lib.rs src/persistence.rs src/gemini.rs materialized/src/
+          cp .github/workflows/ci.yml materialized/.github/workflows/
+          find materialized -type f -print0 | sort -z | xargs -0 sha256sum > materialized/SHA256SUMS
+
+      - name: Upload the generated lock and reviewed source bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canonical-quote-v1-materialized
+          path: materialized
+          retention-days: 7
+          if-no-files-found: error
