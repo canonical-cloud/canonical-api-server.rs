@@ -33,7 +33,7 @@ pub(crate) use contract::AcceptedQuoteRequest;
 use contract::{parse_quote_request, quote_submission_response};
 pub use gemini::{GeminiBuildError, GeminiClient};
 
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro";
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-flash";
 const INTERNAL_TOKEN_HEADER: &str = "x-canonical-internal-token";
 const SUBJECT_HEADER: &str = "x-canonical-subject";
 const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
@@ -671,8 +671,8 @@ mod tests {
     }
 
     #[test]
-    fn default_model_tracks_the_current_pro_preview() {
-        assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.6-pro");
+    fn default_model_tracks_gemini_3_6_flash() {
+        assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.6-flash");
     }
 
     #[tokio::test]
