@@ -92,7 +92,7 @@ jobs:
           install -m 0755 \
             vendor/declarative-postgres-migrate.rs/target/release/dpm \
             "$RUNNER_TEMP/dpm"
-          test "$("$RUNNER_TEMP/dpm" --version)" = "dpm 0.1.0"
+          test "$("$RUNNER_TEMP/dpm" --version)" = "dpm 0.3.2"
 
       - name: Install PostgreSQL client
         shell: bash
