@@ -1,0 +1,116 @@
+name: declarative-postgres
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/declarative-postgres.yml"
+      - "db/**"
+      - "scripts/test-declarative-postgres.sh"
+      - "scripts/verify-declarative-db-contract.py"
+      - "src/main.rs"
+      - "src/persistence.rs"
+      - "src/readiness.rs"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/declarative-postgres.yml"
+      - "db/**"
+      - "scripts/test-declarative-postgres.sh"
+      - "scripts/verify-declarative-db-contract.py"
+      - "src/main.rs"
+      - "src/persistence.rs"
+      - "src/readiness.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: declarative-postgres-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    name: PostgreSQL 17 namespace and RLS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify namespace and migration ledger
+        run: python3 scripts/verify-declarative-db-contract.py
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+
+      - name: Check out exact declarative migration engine
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: declarative-migrations/declarative-postgres-migrate.rs
+          ref: d05a7880987ddaa271fa88b52c787390ef12b899
+          path: vendor/declarative-postgres-migrate.rs
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact migration engine source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C vendor/declarative-postgres-migrate.rs rev-parse HEAD)" = \
+            "d05a7880987ddaa271fa88b52c787390ef12b899"
+
+      - name: Build exact migration engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --locked \
+            --release \
+            --manifest-path vendor/declarative-postgres-migrate.rs/Cargo.toml \
+            --bin dpm
+          install -m 0755 \
+            vendor/declarative-postgres-migrate.rs/target/release/dpm \
+            "$RUNNER_TEMP/dpm"
+          test "$("$RUNNER_TEMP/dpm" --version)" = "dpm 0.3.2"
+
+      - name: Install PostgreSQL client
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Certify bootstrap, apply, RLS, grants, drift and replay
+        env:
+          DPM_BIN: ${{ runner.temp }}/dpm
+          POSTGRES_ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres
+        run: bash scripts/test-declarative-postgres.sh
+
+      - name: Upload bounded migration evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canonical-quote-declarative-postgres
+          path: artifacts/declarative-postgres
+          if-no-files-found: warn
+          retention-days: 14
