@@ -46,6 +46,7 @@ jobs:
           import hashlib
           import json
           import pathlib
+          import tomllib
 
           root = pathlib.Path('.')
           schema = (root / 'db/schema.sql').read_text()
@@ -58,6 +59,9 @@ jobs:
           cargo_lock = (root / 'Cargo.lock').read_text()
           env_example = (root / '.env.example').read_text()
           zpkg = (root / '.zpkg.toml').read_text()
+          declarative_workflow = (root / '.github/workflows/declarative-postgres.yml').read_text()
+          cargo_toml = tomllib.loads(cargo)
+          zpkg_toml = tomllib.loads(zpkg)
           interface_lock = json.loads((root / 'interfaces.lock.json').read_text())
           namespace = json.loads((root / 'db/namespace.json').read_text())
           fixture = json.loads((root / 'fixtures/quote/v1/request.json').read_text())
@@ -94,9 +98,18 @@ jobs:
           assert interface_lock['canonical_interfaces']['quote_request_fixture']['git_blob'] == fixture_blob
           assert 'canonical-lib' in cargo_lock
           assert f'source = "git+https://github.com/canonical-cloud/canonical-lib?rev={canonical_lib_revision}#{canonical_lib_revision}"' in cargo_lock
-          assert 'canonical_lib' in cargo
-          assert 'canonical-api-server.rs' in zpkg
-          assert 'canonical_lib' in zpkg
+          canonical_lib_dependency = cargo_toml['dependencies']['canonical-lib']
+          assert canonical_lib_dependency == {
+              'version': '=0.1.0',
+              'git': 'https://github.com/canonical-cloud/canonical-lib',
+              'rev': canonical_lib_revision,
+          }
+          assert zpkg_toml['package']['name'] == 'canonical-api-server'
+          assert zpkg_toml['package']['repository']['url'] == 'https://github.com/canonical-cloud/canonical-api-server.rs'
+          assert zpkg_toml['dependencies']['canonical-cloud/canonical-lib'] == '^0.1.0'
+          assert zpkg_toml['dependencies']['canonical-cloud/canonical-interfaces'] == '^0.1.0'
+          assert 'repository: declarative-migrations/declarative-postgres-migrate.rs' in declarative_workflow
+          assert f'ref: {dpm_revision}' in declarative_workflow
           assert fixture['organizationName'] == 'Example Company'
           assert fixture['contactEmail'] == 'taylor@example.com'
           assert fixture['frameworks'] == ['soc2', 'iso27001']
@@ -172,9 +185,8 @@ jobs:
           test "$(git ls-files --error-unmatch interfaces.lock.json)" = "interfaces.lock.json"
           test "$(git ls-files --error-unmatch fixtures/quote/v1/request.json)" = "fixtures/quote/v1/request.json"
           test "$(git ls-files --error-unmatch db/namespace.json)" = "db/namespace.json"
-          test "$(git ls-files --stage vendor/declarative-postgres-migrate.rs | awk '{print $1}')" = "160000"
-          test "$(git ls-files --stage vendor/declarative-postgres-migrate.rs | awk '{print $2}')" = \
-            "d05a7880987ddaa271fa88b52c787390ef12b899"
+          test "$(git ls-files --error-unmatch .github/workflows/declarative-postgres.yml)" = \
+            ".github/workflows/declarative-postgres.yml"
           python3 scripts/verify-declarative-db-contract.py
 
   container:
