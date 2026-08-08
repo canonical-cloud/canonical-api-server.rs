@@ -68,12 +68,16 @@ jobs:
           cp Cargo.toml Cargo.lock materialized/
           cp src/lib.rs src/persistence.rs src/gemini.rs materialized/src/
           cp .github/workflows/ci.yml materialized/.github/workflows/
-          find materialized -type f -print0 | sort -z | xargs -0 sha256sum > materialized/SHA256SUMS
+          find materialized -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > materialized/SHA256SUMS
 
       - name: Upload the generated lock and reviewed source bytes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: canonical-quote-v1-materialized
           path: materialized
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: error
