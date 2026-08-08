@@ -19,19 +19,22 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify branch and persistence base
+      - name: Verify exact transformation inputs
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = 'refs/heads/agent/quote-v1-contract-20260808'
-          git fetch --no-tags --depth=1 origin \
-            edaa7a9eff402cd7d88dd76166d547acd76b6365
-          git cat-file -e edaa7a9eff402cd7d88dd76166d547acd76b6365^{commit}
-          test -f patches/quote-v1-contract.patch
-          git apply --check patches/quote-v1-contract.patch
+          test "$(git hash-object src/lib.rs)" = 915ab3f78657fe82b85d5761edb23e3d67d18b92
+          test "$(git hash-object src/persistence.rs)" = d8ee0264d25202bbe3a36ed72e03fc885b4d1a3d
+          test "$(git hash-object src/gemini.rs)" = 13b5f5fa3f9f45427d8b907beab048aeec1c1c91
+          test "$(git hash-object Cargo.toml)" = 2fa9b1bdc9a0680d376ceaacf40b17308aee1522
+          test "$(git hash-object .github/workflows/ci.yml)" = 3361e24b8156ec2381fd7e190b565a69ce37d203
+          test "$(git hash-object fixtures/quote/v1/request.json)" = \
+            fe8bf1ad08a7152d44ead22ee0d082842d28b208
+          python3 -m py_compile scripts/materialize-quote-v1-contract.py
 
-      - name: Apply the reviewed contract patch
-        run: git apply patches/quote-v1-contract.patch
+      - name: Materialize the reviewed contract adapter
+        run: python3 scripts/materialize-quote-v1-contract.py
 
       - name: Install the pinned Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
