@@ -32,7 +32,7 @@ jobs:
           cd "$RUNNER_TEMP/materialized"
           sed 's#  materialized/#  #' SHA256SUMS | sha256sum -c -
 
-      - name: Publish validated source and remove temporary machinery
+      - name: Publish validated non-workflow source bytes
         shell: bash
         run: |
           set -euo pipefail
@@ -41,9 +41,7 @@ jobs:
           cp "$RUNNER_TEMP/materialized/src/lib.rs" src/lib.rs
           cp "$RUNNER_TEMP/materialized/src/persistence.rs" src/persistence.rs
           cp "$RUNNER_TEMP/materialized/src/gemini.rs" src/gemini.rs
-          cp "$RUNNER_TEMP/materialized/.github/workflows/ci.yml" .github/workflows/ci.yml
           rm -f \
-            .github/workflows/materialize-quote-v1-contract.yml \
             patches/quote-v1-contract.patch \
             scripts/materialize-quote-v1-contract.py \
             scripts/materialize-quote-v1-test-fixtures.py
@@ -54,12 +52,25 @@ jobs:
           grep -F 'git+https://github.com/canonical-cloud/canonical-lib?rev=f0add30d4cc7e6825d24565e1db115751f833966#f0add30d4cc7e6825d24565e1db115751f833966' Cargo.lock
           grep -F 'git+https://github.com/canonical-cloud/canonical-interfaces?rev=4c6ca63ca24fa214a1cb1a917ac27f1d5265916a#4c6ca63ca24fa214a1cb1a917ac27f1d5265916a' Cargo.lock
 
-      - name: Commit the exact validated bytes
+      - name: Commit the exact validated bytes when needed
         shell: bash
         run: |
           set -euo pipefail
+          git add -A -- \
+            Cargo.toml \
+            Cargo.lock \
+            src/lib.rs \
+            src/persistence.rs \
+            src/gemini.rs \
+            patches \
+            scripts/materialize-quote-v1-contract.py \
+            scripts/materialize-quote-v1-test-fixtures.py 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo 'validated source bytes are already published'
+            exit 0
+          fi
           git config user.name 'canonical-contract-bot'
           git config user.email 'canonical-contract-bot@users.noreply.github.com'
-          git add -A
+          git diff --cached --check
           git commit -m 'feat: converge API on canonical quote v1 contract'
           git push origin HEAD:agent/quote-v1-contract-20260808
