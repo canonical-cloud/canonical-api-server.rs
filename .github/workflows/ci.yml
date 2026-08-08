@@ -131,7 +131,7 @@ jobs:
           assert 'thinkingBudget' not in gemini
           assert 'responseMimeType' not in gemini
           assert 'responseJsonSchema' not in gemini
-          assert "set_config('app.current_subject', $1, TRUE)" in persistence
+          assert "set_config('app.current_subject', $1, true)" in persistence
           assert "DATABASE_URL is not configured; quote persistence remains memory-only" in persistence
 
           for forbidden in ('IF NOT EXISTS', 'BEGIN;', 'COMMIT;', 'GRANT ', 'REVOKE '):
