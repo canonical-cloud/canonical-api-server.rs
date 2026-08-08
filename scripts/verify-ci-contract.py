@@ -51,11 +51,12 @@ def main() -> None:
     canonical_interfaces_revision = "4c6ca63ca24fa214a1cb1a917ac27f1d5265916a"
 
     assert namespace["namespaceId"] == "canonical_cloud__quote"
-    assert namespace["database"] == {
-        "engine": "postgresql",
-        "minimumMajorVersion": 17,
-        "schema": "canonical_cloud__quote",
-    }
+    database = namespace["database"]
+    assert database["engine"] == "postgresql"
+    assert database["minimumMajorVersion"] == 17
+    assert database["schema"] == "canonical_cloud__quote"
+    assert database["placement"] == "canonical-only"
+    assert database["publicObjectPolicy"] == "forbidden"
     assert namespace["declarativeMigration"]["revision"] == dpm_revision
     assert namespace["declarativeMigration"]["source"] == "db/schema.sql"
     assert namespace["declarativeMigration"]["sourceSha256"] == hashlib.sha256(
