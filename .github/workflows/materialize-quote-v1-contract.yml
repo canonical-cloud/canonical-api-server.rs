@@ -1,0 +1,70 @@
+name: Materialize Canonical quote v1 contract
+
+on:
+  push:
+    branches: [agent/quote-v1-contract-20260808]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.event.head_commit.message != 'chore: materialize canonical quote v1 contract'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the dedicated agent branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify branch and persistence base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/agent/quote-v1-contract-20260808'
+          git merge-base --is-ancestor \
+            edaa7a9eff402cd7d88dd76166d547acd76b6365 \
+            HEAD
+          test -f patches/quote-v1-contract.patch
+          git apply --check patches/quote-v1-contract.patch
+
+      - name: Apply the reviewed contract patch
+        run: git apply patches/quote-v1-contract.patch
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - name: Resolve only the reviewed source graph and validate it
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --all-targets --all-features
+          cargo fmt --all -- --check
+          cargo test --all-targets --all-features --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          grep -F 'git+https://github.com/canonical-cloud/canonical-lib?rev=f0add30d4cc7e6825d24565e1db115751f833966#f0add30d4cc7e6825d24565e1db115751f833966' Cargo.lock
+          grep -F 'git+https://github.com/canonical-cloud/canonical-interfaces?rev=4c6ca63ca24fa214a1cb1a917ac27f1d5265916a#4c6ca63ca24fa214a1cb1a917ac27f1d5265916a' Cargo.lock
+          test "$(git hash-object fixtures/quote/v1/request.json)" = \
+            fe8bf1ad08a7152d44ead22ee0d082842d28b208
+
+      - name: Commit the generated lock and reviewed source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'canonical-contract-bot'
+          git config user.email 'canonical-contract-bot@users.noreply.github.com'
+          git add \
+            Cargo.toml \
+            Cargo.lock \
+            src/lib.rs \
+            src/persistence.rs \
+            src/gemini.rs \
+            .github/workflows/ci.yml
+          git diff --cached --check
+          git commit -m 'chore: materialize canonical quote v1 contract'
+          git push origin HEAD:agent/quote-v1-contract-20260808
