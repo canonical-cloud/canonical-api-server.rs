@@ -16,7 +16,7 @@ jobs:
       - name: Check out the dedicated agent branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Verify branch and persistence base
@@ -24,9 +24,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = 'refs/heads/agent/quote-v1-contract-20260808'
-          git merge-base --is-ancestor \
-            edaa7a9eff402cd7d88dd76166d547acd76b6365 \
-            HEAD
+          git fetch --no-tags --depth=1 origin \
+            edaa7a9eff402cd7d88dd76166d547acd76b6365
+          git cat-file -e edaa7a9eff402cd7d88dd76166d547acd76b6365^{commit}
           test -f patches/quote-v1-contract.patch
           git apply --check patches/quote-v1-contract.patch
 
