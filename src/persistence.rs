@@ -1,3 +1,4 @@
+use canonical_lib::interfaces::QuoteRequest as WireQuoteRequest;
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, DbErr, QueryResult,
     Statement, TransactionTrait,
@@ -6,7 +7,7 @@ use serde_json::{json, Value as JsonValue};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{CanonicalContext, CreateQuoteRequest, QuoteRecord};
+use crate::{AcceptedQuoteRequest, CanonicalContext, QuoteRecord};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -34,7 +35,7 @@ impl StoreError {
 pub async fn create_quote(
     database: &DatabaseConnection,
     subject: &str,
-    request: &CreateQuoteRequest,
+    request: &AcceptedQuoteRequest,
     record: &QuoteRecord,
 ) -> Result<CanonicalContext, StoreError> {
     let transaction = begin_subject_transaction(database, subject).await?;
@@ -58,8 +59,8 @@ pub async fn create_quote(
     let context = context_from_row(&row)?;
     context.validate().map_err(StoreError::InvalidRecord)?;
 
-    let request_json =
-        serde_json::to_value(request).map_err(|_| StoreError::InvalidRecord("quote request"))?;
+    let request_json = serde_json::to_value(&request.wire)
+        .map_err(|_| StoreError::InvalidRecord("quote request"))?;
     transaction
         .execute_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
@@ -84,7 +85,7 @@ pub async fn create_quote(
                 subject.to_owned().into(),
                 context.id.into(),
                 request_json.into(),
-                request.markdown_context.clone().into(),
+                request.application_markdown.clone().into(),
                 context.context_markdown.clone().into(),
                 context.context_json.clone().into(),
                 record.gemini_model.clone().into(),
@@ -351,7 +352,7 @@ fn context_from_row(row: &QueryResult) -> Result<CanonicalContext, StoreError> {
 
 fn quote_from_row(row: &QueryResult) -> Result<QuoteRecord, StoreError> {
     let request_json = row.try_get::<JsonValue>("", "request_json")?;
-    let request: CreateQuoteRequest = serde_json::from_value(request_json)
+    let request: WireQuoteRequest = serde_json::from_value(request_json)
         .map_err(|_| StoreError::InvalidRecord("canonical_quote.request_json"))?;
     let status = row.try_get::<String>("", "status")?;
     if !matches!(
@@ -367,7 +368,7 @@ fn quote_from_row(row: &QueryResult) -> Result<QuoteRecord, StoreError> {
         error_code: row.try_get::<Option<String>>("", "error_code")?,
         frameworks: request.frameworks,
         gemini_model: row.try_get::<String>("", "gemini_model")?,
-        organization_name: request.organization.legal_name,
+        organization_name: request.organization_name,
         owner_subject: row.try_get::<String>("", "owner_subject")?,
         persistence: "postgres".into(),
         quote_id: row.try_get::<Uuid>("", "id")?,

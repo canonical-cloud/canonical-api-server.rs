@@ -306,6 +306,7 @@ name = "canonical-api-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "canonical-lib",
  "futures-util",
  "http-body-util",
  "reqwest",
@@ -314,12 +315,32 @@ dependencies = [
  "serde_json",
  "subtle",
  "thiserror",
+ "time",
  "tokio",
  "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "canonical-interfaces"
+version = "0.1.0"
+source = "git+https://github.com/canonical-cloud/canonical-interfaces?rev=4c6ca63ca24fa214a1cb1a917ac27f1d5265916a#4c6ca63ca24fa214a1cb1a917ac27f1d5265916a"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "canonical-lib"
+version = "0.1.0"
+source = "git+https://github.com/canonical-cloud/canonical-lib?rev=f0add30d4cc7e6825d24565e1db115751f833966#f0add30d4cc7e6825d24565e1db115751f833966"
+dependencies = [
+ "canonical-interfaces",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

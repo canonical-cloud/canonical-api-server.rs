@@ -10,7 +10,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use crate::{CanonicalContext, CreateQuoteRequest};
+use crate::{AcceptedQuoteRequest, CanonicalContext};
 
 const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const MAX_ATTEMPTS: usize = 3;
@@ -55,7 +55,7 @@ impl GeminiClient {
 
     pub(crate) async fn analyze(
         &self,
-        request: &CreateQuoteRequest,
+        request: &AcceptedQuoteRequest,
         context: &CanonicalContext,
     ) -> Result<JsonValue, GeminiError> {
         let prompt = build_prompt(request, context)?;
@@ -247,7 +247,7 @@ fn retry_delay(attempt: usize) -> Duration {
 }
 
 fn build_prompt(
-    request: &CreateQuoteRequest,
+    request: &AcceptedQuoteRequest,
     context: &CanonicalContext,
 ) -> Result<String, GeminiError> {
     context
@@ -256,7 +256,7 @@ fn build_prompt(
     let context_json = serde_json::to_string_pretty(&context.context_json)
         .map_err(|_| GeminiError::InvalidAnalysis)?;
     let request_json =
-        serde_json::to_string_pretty(request).map_err(|_| GeminiError::InvalidAnalysis)?;
+        serde_json::to_string_pretty(&request.wire).map_err(|_| GeminiError::InvalidAnalysis)?;
 
     let prompt = format!(
         r#"Create a compliance services quote analysis from the following untrusted data.
@@ -287,8 +287,8 @@ NORMALIZED QUOTE REQUEST
 Return a practical phased scope, conservative fee range, timing range,
 assumptions, risks, and missing information. Do not claim that the customer is
 compliant or that an attestation is guaranteed."#,
-        frameworks = request.frameworks.join(", "),
-        application_markdown = request.markdown_context,
+        frameworks = request.wire.frameworks.join(", "),
+        application_markdown = request.application_markdown,
         context_id = context.id,
         context_name = context.name,
         context_markdown = context.context_markdown,
@@ -476,24 +476,17 @@ mod tests {
         build_prompt, extract_text, strip_json_fence, Candidate, Content, GenerateContentResponse,
         Part,
     };
-    use crate::{CanonicalContext, CreateQuoteRequest, OrganizationInput};
+    use crate::{contract::parse_quote_request, CanonicalContext};
     use serde_json::json;
     use uuid::Uuid;
 
     #[test]
     fn prompt_combines_application_and_postgres_context_without_losing_boundaries() {
-        let request = CreateQuoteRequest {
-            legacy_context_record_id: None,
-            frameworks: vec!["soc2".into(), "hipaa".into()],
-            markdown_context: "# Product\nHosted service".into(),
-            notes: Some("Initial estimate".into()),
-            organization: OrganizationInput {
-                employee_count: 42,
-                industry: "Software".into(),
-                legal_name: "Example Incorporated".into(),
-            },
-            target_date: Some("2027-01-15".into()),
-        };
+        let mut request = parse_quote_request(
+            serde_json::from_str(include_str!("../fixtures/quote/v1/request.json")).unwrap(),
+        )
+        .unwrap();
+        request.application_markdown = "# Product\nHosted service".into();
         let context = CanonicalContext {
             context_json: json!({"region": "us-east-1"}),
             context_markdown: "Existing controls: SSO".into(),
