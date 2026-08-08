@@ -31,10 +31,14 @@ jobs:
           test "$(git hash-object .github/workflows/ci.yml)" = 3361e24b8156ec2381fd7e190b565a69ce37d203
           test "$(git hash-object fixtures/quote/v1/request.json)" = \
             fe8bf1ad08a7152d44ead22ee0d082842d28b208
-          python3 -m py_compile scripts/materialize-quote-v1-contract.py
+          python3 -m py_compile \
+            scripts/materialize-quote-v1-contract.py \
+            scripts/materialize-quote-v1-test-fixtures.py
 
       - name: Materialize the reviewed contract adapter
-        run: python3 scripts/materialize-quote-v1-contract.py
+        run: |
+          python3 scripts/materialize-quote-v1-contract.py
+          python3 scripts/materialize-quote-v1-test-fixtures.py
 
       - name: Install the pinned Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
