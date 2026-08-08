@@ -11,14 +11,11 @@ use uuid::Uuid;
 use crate::{ApiError, APPLICATION_CONTEXT_MARKDOWN, MAX_MARKDOWN_CONTEXT_BYTES};
 
 #[cfg(test)]
-const CANONICAL_INTERFACES_REVISION: &str =
-    "4c6ca63ca24fa214a1cb1a917ac27f1d5265916a";
+const CANONICAL_INTERFACES_REVISION: &str = "4c6ca63ca24fa214a1cb1a917ac27f1d5265916a";
 #[cfg(test)]
-const CANONICAL_LIB_REVISION: &str =
-    "f0add30d4cc7e6825d24565e1db115751f833966";
+const CANONICAL_LIB_REVISION: &str = "f0add30d4cc7e6825d24565e1db115751f833966";
 #[cfg(test)]
-const QUOTE_REQUEST_FIXTURE_BLOB: &str =
-    "fe8bf1ad08a7152d44ead22ee0d082842d28b208";
+const QUOTE_REQUEST_FIXTURE_BLOB: &str = "fe8bf1ad08a7152d44ead22ee0d082842d28b208";
 
 const REQUEST_FIELDS: &[&str] = &[
     "organizationName",
@@ -147,7 +144,9 @@ mod tests {
             QUOTE_REQUEST_FIXTURE_BLOB,
         ] {
             assert_eq!(revision.len(), 40);
-            assert!(revision.chars().all(|character| character.is_ascii_hexdigit()));
+            assert!(revision
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()));
         }
     }
 }
