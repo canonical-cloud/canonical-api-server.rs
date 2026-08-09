@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "githubOwner": "canonical-cloud",
+  "project": "quote",
+  "namespaceId": "canonical_cloud__quote",
+  "database": {
+    "engine": "postgresql",
+    "minimumMajorVersion": 17,
+    "placement": "canonical-only",
+    "schema": "canonical_cloud__quote",
+    "publicObjectPolicy": "forbidden"
+  },
+  "services": {
+    "apiOwner": "canonical-cloud/canonical-api-server.rs",
+    "webCaller": "canonical-cloud/canonical-web-server.rs"
+  },
+  "roles": {
+    "migrator": "canonical_cloud__quote__migrator",
+    "apiRuntime": "canonical_cloud__quote__api_rw",
+    "webRuntime": "canonical_cloud__quote__web_ro"
+  },
+  "access": {
+    "apiRuntime": [
+      "SELECT",
+      "INSERT",
+      "UPDATE"
+    ],
+    "webRuntime": [],
+    "ddlOwner": "canonical_cloud__quote__migrator"
+  },
+  "declarativeMigration": {
+    "tool": "declarative-migrations/declarative-postgres-migrate.rs",
+    "revision": "d05a7880987ddaa271fa88b52c787390ef12b899",
+    "source": "db/schema.sql",
+    "sourceSha256": "712f1269da3c8dfd381af9c69a81e549a4eb52be3e4f49558ec1a5edf205e191",
+    "bootstrap": "db/bootstrap.sql",
+    "grants": "db/grants.sql"
+  },
+  "readiness": {
+    "endpoint": "/readyz",
+    "runtimeRole": "canonical_cloud__quote__api_rw",
+    "livenessEndpoint": "/healthz",
+    "failClosed": true
+  }
+}

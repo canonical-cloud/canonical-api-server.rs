@@ -33,14 +33,14 @@ normalized intake fields and the owner-scoped `canonical_context` row.
    unambiguous; browser input cannot choose a context UUID.
 3. The API stores immutable snapshots of the application Markdown, selected
    database context, and normalized request before starting analysis.
-4. Gemini receives those three bounded inputs under explicit untrusted-data
+4. Gemini receives those bounded inputs under explicit untrusted-data
    delimiters and returns schema-constrained JSON.
 5. Durable quote state and append-only events transition from `queued` to
    `analyzing`, then `completed` or `failed`.
 6. REST lookup and the WebSocket stream are owner scoped. WebSocket broadcasts
-   are hints; a restarted process recovers the current quote from PostgreSQL.
+   are hints; PostgreSQL remains authoritative.
 
-The default model is `gemini-3.1-pro-preview` and remains configurable through
+The default model is `gemini-3.6-pro` and remains configurable through
 `GEMINI_MODEL`. Requests use the Google API-key header, a fixed Google API
 origin, disabled redirects, bounded responses, retries for transport/429/5xx
 failures, and a small circuit breaker. Prompts, context, model output, internal
@@ -66,29 +66,97 @@ All quote routes require both:
   Canonical web tier.
 
 Cloudflare and the ingress must remove client-supplied `x-canonical-*` and
-`x-auth-*` headers. The API should not be routed directly to an unrestricted
+`x-auth-*` headers. The API must not be routed directly to an unrestricted
 public origin.
 
-## PostgreSQL
+## PostgreSQL ownership and namespace
 
-Apply [`db/schema.sql`](db/schema.sql) through the migration identity, not the
-runtime service login. The schema provides:
+The quote data plane uses one dedicated PostgreSQL namespace:
 
-- `canonical_context`, with at most one active row per owner;
-- `canonical_quote` with immutable input snapshots and the structured result;
-- append-only `canonical_quote_event`;
-- provider metadata in `canonical_model_attempt`;
-- forced row-level security based on the transaction-local
-  `app.current_subject`.
+```text
+schema:   canonical_cloud__quote
+migrator: canonical_cloud__quote__migrator
+API:      canonical_cloud__quote__api_rw
+web:      canonical_cloud__quote__web_ro
+```
 
-The runtime login must be non-owner, non-superuser, non-`BYPASSRLS`, and have
-only the grants documented at the end of the schema. Every operation sets the
-subject inside the same transaction and still includes an explicit owner
-predicate.
+The API role is a non-owner, non-superuser, non-`BYPASSRLS` login with only the
+explicit DML grants in `db/grants.sql`. The web role deliberately has no direct
+table access; the web service uses the authenticated API boundary. Only the
+migrator owns the schema and performs DDL.
+
+The role bootstrap pins `search_path` to
+`pg_catalog,canonical_cloud__quote`, revokes `CREATE` on `public`, applies
+bounded statement/lock/idle-transaction timeouts, and makes the web role
+transaction-read-only. Runtime operations still set `app.current_subject`
+inside each transaction, and every business query includes an explicit owner
+predicate. All four tables use forced row-level security.
 
 `DATABASE_URL` is optional only for local routing tests. Without it, quote state
 is labelled `memory-only` and restart recovery is unavailable. Production must
-configure PostgreSQL.
+use the `canonical_cloud__quote__api_rw` identity. The migration URL must be
+held only by a protected migration job and never injected into the API process.
+
+## Declarative migration workflow
+
+`db/schema.sql` is the desired state, not an imperative migration history. It
+contains no credentials, role creation, grants, transaction wrapper, or
+`IF NOT EXISTS` escape hatch. The exact source digest and role mapping are
+recorded in `db/namespace.json`.
+
+The reviewed sequence is:
+
+```sh
+# 1. DBA/platform bootstrap: roles, namespace owner, search_path, timeouts.
+psql "$POSTGRES_ADMIN_URL" -v ON_ERROR_STOP=1 -f db/bootstrap.sql
+
+# 2. Prove the migration against a throwaway shadow database.
+dpm verify \
+  --source-sql db/schema.sql \
+  --target "$MIGRATION_DATABASE_URL" \
+  --shadow "$POSTGRES_ADMIN_URL"
+
+# 3. Apply the reviewed declarative plan through the migrator identity.
+dpm apply \
+  --source-sql db/schema.sql \
+  --target "$MIGRATION_DATABASE_URL" \
+  --shadow "$POSTGRES_ADMIN_URL" \
+  --yes
+
+# 4. Reconcile the explicit runtime grants after every schema apply.
+psql "$POSTGRES_ADMIN_URL" -v ON_ERROR_STOP=1 -f db/grants.sql
+
+# 5. Require an empty post-apply plan.
+dpm diff \
+  --source-sql db/schema.sql \
+  --target "$MIGRATION_DATABASE_URL" \
+  --shadow "$POSTGRES_ADMIN_URL" \
+  --fail-on-diff
+```
+
+Destructive drift is never silently repaired. `dpm apply` must remain blocked
+unless the reviewed command explicitly supplies the destructive consent flags.
+The protected PostgreSQL 17 CI lane proves:
+
+- role and ownership separation;
+- no application object in `public`;
+- forced RLS and cross-owner isolation;
+- rejection of caller-forged ownership;
+- no direct web-table access;
+- no API DDL capability;
+- idempotent replay with data preservation;
+- out-of-band drift detection;
+- destructive-change gating; and
+- final shadow-replay convergence.
+
+Run the same certification locally against a disposable PostgreSQL cluster:
+
+```sh
+python3 scripts/verify-declarative-db-contract.py
+DPM_BIN=/path/to/dpm \
+POSTGRES_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres \
+  scripts/test-declarative-postgres.sh
+```
 
 ## Gemini
 
@@ -96,23 +164,19 @@ Set `GEMINI_API_KEY` through the Kubernetes secret store. When the key is
 absent, health remains available and accepted development requests transition
 to `failed` with the bounded code `gemini_not_configured`.
 
-The response schema includes:
-
-- phased framework services;
-- conservative USD fee and duration ranges;
-- assumptions, risks, and missing information;
-- a required non-binding disclaimer.
-
-No provider error body is returned to clients or logged.
+The response schema includes phased framework services, conservative USD fee
+and duration ranges, assumptions, risks, missing information, and a required
+non-binding disclaimer. No provider error body is returned to clients or
+logged.
 
 ## Develop
 
 ```sh
 cp .env.example .env
 set -a; source .env; set +a
-cargo fmt --all -- --check
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
+cargo fmt --all --check
+cargo test --all-targets --all-features --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo run
 ```
 
@@ -131,18 +195,20 @@ curl --fail http://127.0.0.1:8080/healthz
 ```
 
 Application CI formats, tests, lints, builds, and smoke-tests the image. On
-`main`, `.github/workflows/release.yml` publishes immutable `main` and commit-SHA
-tags to GHCR with provenance and an SBOM, then records the image digest as a
-workflow artifact. Canonical GitOps configuration must consume the digest rather
-than a mutable tag.
+`main`, `.github/workflows/release.yml` publishes immutable `main` and
+commit-SHA tags to GHCR with provenance and an SBOM, then records the image
+digest as a workflow artifact. Canonical GitOps configuration must consume the
+digest rather than a mutable tag.
 
 ## Production gates outside this repository
 
-- provision the exact Canonical PostgreSQL runtime/migration roles, reconcile
-  any owner that currently has multiple active context rows, and apply the
-  reviewed schema;
-- inject the Gemini key and internal service token from the cluster secret
-  store;
-- deploy behind the Canonical Shared Auth introspection boundary;
-- certify owner isolation, revocation, provider failure, restart recovery, and
-  WebSocket reconnect behavior in the Kubernetes staging environment.
+- verify the exact Canonical database, migration identity, runtime identity,
+  namespace ownership, backups, restore point, and starting schema before any
+  production apply;
+- reconcile any owner that currently has multiple active context rows before
+  enforcing the partial unique index;
+- inject database, Gemini, and internal service credentials from the platform
+  secret store;
+- deploy behind the Canonical Shared Auth introspection boundary; and
+- certify owner isolation, revocation, provider failure, restart recovery, REST
+  recovery, and WebSocket reconnect behavior in Kubernetes staging.

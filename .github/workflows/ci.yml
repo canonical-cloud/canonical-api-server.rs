@@ -22,11 +22,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate package, container, model, and security contracts
+      - name: Validate package, container, model, database, and security contracts
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/verify-declarative-db-contract.py
           python3 - <<'PY'
+          import json
           import tomllib
           from pathlib import Path
 
@@ -63,12 +65,12 @@ jobs:
           ):
               assert required in source, required
 
-          assert 'pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";' in source
-          assert 'gemini-3.6-pro' not in source
+          assert 'pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-pro";' in source
           env_example = Path('.env.example').read_text()
-          assert 'GEMINI_MODEL=gemini-3.1-pro-preview' in env_example
+          assert 'GEMINI_MODEL=gemini-3.6-pro' in env_example
           assert 'CANONICAL_INTERNAL_AUTH_TOKEN=' in env_example
-          assert 'gemini-3.6-pro' not in env_example
+          assert 'canonical_cloud__quote__api_rw' in env_example
+          assert 'canonical_cloud__quote__migrator' in env_example
 
           gemini = Path('src/gemini.rs').read_text()
           assert '.redirect(Policy::none())' in gemini
@@ -78,18 +80,44 @@ jobs:
           assert '"schema": analysis_schema()' in gemini
           assert '"temperature": 0.2' not in gemini
 
+          namespace = json.loads(Path('db/namespace.json').read_text())
+          assert namespace['namespaceId'] == 'canonical_cloud__quote'
+          assert namespace['roles'] == {
+              'migrator': 'canonical_cloud__quote__migrator',
+              'apiRuntime': 'canonical_cloud__quote__api_rw',
+              'webRuntime': 'canonical_cloud__quote__web_ro',
+          }
+          assert namespace['declarativeMigration']['revision'] == (
+              'd05a7880987ddaa271fa88b52c787390ef12b899'
+          )
+
           schema = Path('db/schema.sql').read_text()
-          assert 'ALTER TABLE canonical_quote FORCE ROW LEVEL SECURITY' in schema
-          assert 'ALTER TABLE canonical_context FORCE ROW LEVEL SECURITY' in schema
+          assert 'CREATE SCHEMA canonical_cloud__quote;' in schema
+          assert 'canonical_cloud__quote.canonical_context' in schema
+          assert 'canonical_cloud__quote.canonical_quote' in schema
+          assert 'canonical_cloud__quote.canonical_quote_event' in schema
+          assert 'canonical_cloud__quote.canonical_model_attempt' in schema
           assert 'canonical_context_one_active_per_owner_idx' in schema
           assert 'WHERE active = TRUE' in schema
-          assert 'canonical_quote_event' in schema
-          assert 'canonical_model_attempt' in schema
+          assert schema.count('FORCE ROW LEVEL SECURITY') == 4
+          for forbidden in ('IF NOT EXISTS', 'BEGIN;', 'COMMIT;', 'GRANT ', 'REVOKE '):
+              assert forbidden not in schema, forbidden
+
+          bootstrap = Path('db/bootstrap.sql').read_text()
+          assert 'REVOKE CREATE ON SCHEMA public FROM PUBLIC' in bootstrap
+          assert 'SET search_path = pg_catalog, canonical_cloud__quote' in bootstrap
+          assert 'SET default_transaction_read_only = on' in bootstrap
+
+          grants = Path('db/grants.sql').read_text()
+          assert 'GRANT SELECT, INSERT, UPDATE' in grants
+          assert 'canonical_cloud__quote__web_ro' in grants
+          assert 'GRANT ALL' not in grants
 
           persistence = Path('src/persistence.rs').read_text()
           assert 'WHERE owner_subject = $1' in persistence
           assert 'request.context_record_id' not in persistence
           assert 'ORDER BY updated_at DESC, id' in persistence
+          assert 'public.canonical_' not in persistence
           PY
 
       - name: Install the pinned Rust toolchain
@@ -163,5 +191,5 @@ jobs:
           assert health['status'] == 'ok'
           assert health['databaseConfigured'] is False
           assert health['geminiConfigured'] is False
-          assert health['geminiModel'] == 'gemini-3.1-pro-preview'
+          assert health['geminiModel'] == 'gemini-3.6-pro'
           PY
