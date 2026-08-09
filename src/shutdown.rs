@@ -25,6 +25,12 @@ pub enum Event {
     DrainFailed,
 }
 
+impl Event {
+    const fn is_signal(self) -> bool {
+        matches!(self, Self::SigInt | Self::SigTerm)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     None,
@@ -37,6 +43,7 @@ struct State {
     phase: Phase,
     tty: bool,
     trigger: Option<Event>,
+    /// Counts operating-system SIGINT/SIGTERM events only.
     signal_count: u32,
     forced_by: Option<Event>,
 }
@@ -86,13 +93,11 @@ const fn reduce(state: State, event: Event) -> (State, Action) {
                 return (state, Action::None);
             }
 
-            if matches!(event, Event::SigInt | Event::SigTerm) {
+            if event.is_signal() {
                 let mut next = state;
                 next.phase = Phase::Draining;
                 next.trigger = Some(event);
-                if matches!(event, Event::SigInt) {
-                    next.signal_count = 1;
-                }
+                next.signal_count = next.signal_count.saturating_add(1);
                 (next, Action::StartGraceful)
             } else if matches!(event, Event::DrainFailed) {
                 let mut next = state;
@@ -119,8 +124,8 @@ const fn reduce(state: State, event: Event) -> (State, Action) {
             let mut next = state;
             next.phase = Phase::Forcing;
             next.forced_by = Some(event);
-            if matches!(event, Event::SigInt) {
-                next.signal_count += 1;
+            if event.is_signal() {
+                next.signal_count = next.signal_count.saturating_add(1);
             }
             (next, Action::Force)
         }
@@ -287,6 +292,9 @@ async fn serve_with_events(
                             phase = ?state.phase,
                             trigger = ?state.trigger,
                             forced_by = ?state.forced_by,
+                            tty = state.tty,
+                            signal_count = state.signal_count,
+                            grace_ms = millis(config.grace),
                             active_connections = handle.connection_count() as u64,
                             elapsed_ms = millis(started_at.elapsed()),
                             %error,
@@ -337,6 +345,7 @@ async fn serve_with_events(
                                 input = ?event,
                                 phase = ?state.phase,
                                 tty = true,
+                                signal_count = state.signal_count,
                                 "interactive drain active; press Ctrl-C again or Ctrl-D to force close",
                             );
                         }
@@ -403,7 +412,18 @@ mod tests {
     }
 
     #[test]
-    fn tty_eof_only_forces_after_first_sigint() {
+    fn sigterm_counts_as_an_operating_system_signal() {
+        let (state, action) = reduce(State::new(false), Event::SigTerm);
+        assert_eq!(action, Action::StartGraceful);
+        assert_eq!(state.signal_count, 1);
+
+        let (state, action) = reduce(state, Event::SigTerm);
+        assert_eq!(action, Action::Force);
+        assert_eq!(state.signal_count, 2);
+    }
+
+    #[test]
+    fn tty_eof_only_forces_after_first_sigint_without_counting_a_signal() {
         let initial = State::new(true);
         assert_eq!(reduce(initial, Event::Eof), (initial, Action::None));
 
@@ -411,11 +431,13 @@ mod tests {
         let (state, action) = reduce(state, Event::Eof);
         assert_eq!(action, Action::Force);
         assert_eq!(state.forced_by, Some(Event::Eof));
+        assert_eq!(state.signal_count, 1);
     }
 
     #[test]
     fn tty_eof_after_sigterm_is_ignored() {
         let (state, _) = reduce(State::new(true), Event::SigTerm);
+        assert_eq!(state.signal_count, 1);
         assert_eq!(reduce(state, Event::Eof), (state, Action::None));
     }
 
@@ -426,6 +448,17 @@ mod tests {
         let (state, action) = reduce(initial, Event::SigTerm);
         assert_eq!(action, Action::StartGraceful);
         assert_eq!(state.phase, Phase::Draining);
+        assert_eq!(state.signal_count, 1);
+    }
+
+    #[test]
+    fn deadline_and_drain_failure_do_not_increment_signal_count() {
+        for event in [Event::Deadline, Event::DrainFailed] {
+            let (state, _) = reduce(State::new(false), Event::SigTerm);
+            let (forced, action) = reduce(state, event);
+            assert_eq!(action, Action::Force);
+            assert_eq!(forced.signal_count, 1);
+        }
     }
 
     async fn never_finishes(AxumState(entered): AxumState<Arc<Notify>>) -> &'static str {
