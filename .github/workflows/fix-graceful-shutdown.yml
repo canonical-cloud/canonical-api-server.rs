@@ -42,19 +42,22 @@ jobs:
           path = Path('src/shutdown.rs')
           text = path.read_text()
           text = text.replace('    Drained,\n', '')
-          block = '''            if matches!(event, Event::Drained) {
-                let mut next = state;
-                next.phase = Phase::Stopped;
-                return (next, Action::Complete);
-            }
-
-'''
-          text = text.replace(block, '')
+          drained_block = (
+              '            if matches!(event, Event::Drained) {\n'
+              '                let mut next = state;\n'
+              '                next.phase = Phase::Stopped;\n'
+              '                return (next, Action::Complete);\n'
+              '            }\n'
+              '\n'
+          )
+          complete_arm = (
+              '                    Action::Complete => {\n'
+              '                        handle.shutdown();\n'
+              '                    }\n'
+          )
+          text = text.replace(drained_block, '')
           text = text.replace('    Complete,\n', '')
-          text = text.replace('''                    Action::Complete => {
-                        handle.shutdown();
-                    }
-''', '')
+          text = text.replace(complete_arm, '')
           path.write_text(text)
           PY
 
