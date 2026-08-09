@@ -48,6 +48,63 @@ $$;
 
 DO $$
 DECLARE
+    role_count integer;
+    invalid_roles text;
+BEGIN
+    SELECT count(*)
+    INTO role_count
+    FROM pg_roles
+    WHERE rolname IN (
+        'canonical_cloud__quote__migrator',
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote__web_ro'
+    );
+
+    IF role_count <> 3 THEN
+        RAISE EXCEPTION 'all three Canonical quote roles must exist';
+    END IF;
+
+    SELECT string_agg(rolname, ', ' ORDER BY rolname)
+    INTO invalid_roles
+    FROM pg_roles
+    WHERE rolname IN (
+        'canonical_cloud__quote__migrator',
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote__web_ro'
+    )
+      AND (
+          NOT rolcanlogin
+          OR rolsuper
+          OR rolcreatedb
+          OR rolcreaterole
+          OR rolinherit
+          OR rolreplication
+          OR rolbypassrls
+      );
+
+    IF invalid_roles IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Canonical quote roles have forbidden attributes: %',
+            invalid_roles;
+    END IF;
+
+    IF pg_has_role(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote__migrator',
+        'member'
+    ) OR pg_has_role(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote__migrator',
+        'member'
+    ) THEN
+        RAISE EXCEPTION
+            'runtime roles must not inherit or hold migrator membership';
+    END IF;
+END;
+$$;
+
+DO $$
+DECLARE
     database_name text := current_database();
 BEGIN
     EXECUTE format(

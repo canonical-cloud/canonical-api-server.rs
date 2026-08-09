@@ -32,8 +32,14 @@
     "tool": "declarative-migrations/declarative-postgres-migrate.rs",
     "revision": "d05a7880987ddaa271fa88b52c787390ef12b899",
     "source": "db/schema.sql",
-    "sourceSha256": "1933121f6db97e53ea6b51ef3dcf63c77c717839a92281086be454874e41da4a",
+    "sourceSha256": "712f1269da3c8dfd381af9c69a81e549a4eb52be3e4f49558ec1a5edf205e191",
     "bootstrap": "db/bootstrap.sql",
     "grants": "db/grants.sql"
+  },
+  "readiness": {
+    "endpoint": "/readyz",
+    "runtimeRole": "canonical_cloud__quote__api_rw",
+    "livenessEndpoint": "/healthz",
+    "failClosed": true
   }
 }

@@ -1,5 +1,48 @@
 \set ON_ERROR_STOP on
 
+DO $$
+DECLARE
+    invalid_roles text;
+BEGIN
+    SELECT string_agg(rolname, ', ' ORDER BY rolname)
+    INTO invalid_roles
+    FROM pg_roles
+    WHERE rolname IN (
+        'canonical_cloud__quote__migrator',
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote__web_ro'
+    )
+      AND (
+          NOT rolcanlogin
+          OR rolsuper
+          OR rolcreatedb
+          OR rolcreaterole
+          OR rolinherit
+          OR rolreplication
+          OR rolbypassrls
+      );
+
+    IF invalid_roles IS NOT NULL THEN
+        RAISE EXCEPTION
+            'refusing grants because Canonical quote roles have forbidden attributes: %',
+            invalid_roles;
+    END IF;
+
+    IF pg_has_role(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote__migrator',
+        'member'
+    ) OR pg_has_role(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote__migrator',
+        'member'
+    ) THEN
+        RAISE EXCEPTION
+            'runtime roles must not hold migrator membership';
+    END IF;
+END;
+$$;
+
 REVOKE ALL ON SCHEMA canonical_cloud__quote FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA canonical_cloud__quote FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA canonical_cloud__quote FROM PUBLIC;
@@ -65,27 +108,148 @@ BEGIN
         'canonical_cloud__quote__api_rw',
         'canonical_cloud__quote',
         'CREATE'
+    ) OR has_schema_privilege(
+        'canonical_cloud__quote__api_rw',
+        'public',
+        'CREATE'
     ) THEN
         RAISE EXCEPTION
             'the API role must not create schema objects';
+    END IF;
+
+    IF NOT has_schema_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote',
+        'USAGE'
+    ) THEN
+        RAISE EXCEPTION
+            'the API role must have namespace usage';
+    END IF;
+
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_context',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_context',
+        'INSERT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_context',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_context',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_context',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_context API privilege contract is not exact';
+    END IF;
+
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote',
+        'INSERT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_quote API privilege contract is not exact';
+    END IF;
+
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_event',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_event',
+        'INSERT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_event',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_event',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_event',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_quote_event API privilege contract is not append-only';
+    END IF;
+
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_model_attempt',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_model_attempt',
+        'INSERT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_model_attempt',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_model_attempt',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_model_attempt',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_model_attempt API privilege contract is not exact';
+    END IF;
+
+    IF NOT has_sequence_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_event_sequence_id_seq',
+        'USAGE'
+    ) OR NOT has_function_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_set_updated_at()',
+        'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION
+            'the API role is missing required sequence or function privileges';
     END IF;
 
     IF has_schema_privilege(
         'canonical_cloud__quote__web_ro',
         'canonical_cloud__quote',
         'USAGE'
-    ) THEN
-        RAISE EXCEPTION
-            'the web role has no direct Canonical quote database surface';
-    END IF;
-
-    IF has_table_privilege(
+    ) OR has_table_privilege(
         'canonical_cloud__quote__web_ro',
         'canonical_cloud__quote.canonical_quote',
         'SELECT'
     ) THEN
         RAISE EXCEPTION
-            'the web role must not read quote rows directly';
+            'the web role has a forbidden direct Canonical quote database surface';
     END IF;
 END;
 $$;
