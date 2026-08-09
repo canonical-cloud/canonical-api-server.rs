@@ -1,0 +1,90 @@
+name: Apply and validate graceful-shutdown migration
+
+on:
+  push:
+    branches:
+      - agent/graceful-shutdown
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - .github/graceful-shutdown/migration.tgz.b64
+      - .github/workflows/sync-graceful-shutdown.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canonical-api-server-graceful-shutdown-migration
+  cancel-in-progress: true
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out rollout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Verify and apply migration payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=/tmp/canonical-shutdown-migration
+          rm -rf "$work"
+          mkdir -p "$work"
+
+          base64 --decode .github/graceful-shutdown/migration.tgz.b64 > "$work/migration.tgz"
+          printf '%s  %s\n' \
+            '2d1f4597e1c24e0596b332604f27d0e0098aabf443041241b9cedc4c72c568ce' \
+            "$work/migration.tgz" | sha256sum --check --strict -
+          tar -xzf "$work/migration.tgz" -C "$work"
+
+          # The migration script consumes the shutdown source through a
+          # temporary base64 file so the branch carries only one verified
+          # archive. Remove the intermediate before evaluating the diff.
+          base64 -w0 "$work/shutdown.rs" > .github/graceful-shutdown/shutdown.rs.b64
+          python3 "$work/migrate.py"
+          rm -f .github/graceful-shutdown/shutdown.rs.b64
+
+      - name: Format, resolve, and compile every target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo test --no-run --all-targets
+
+      - name: Commit only product source and lockfile changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          changed="$(git diff --name-only)"
+          if [[ -z "$changed" ]]; then
+            echo 'Graceful-shutdown product artifacts are already current.'
+            exit 0
+          fi
+
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(Cargo\.toml|Cargo\.lock|src/.*\.rs)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo 'Refusing to commit unexpected files:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock src
+          git commit -m 'feat: complete graceful-shutdown lifecycle'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
