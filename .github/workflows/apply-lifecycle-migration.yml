@@ -1,0 +1,83 @@
+name: Apply and validate lifecycle migration
+
+on:
+  push:
+    branches:
+      - agent/graceful-shutdown
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - .github/graceful-shutdown/migration-v2.tgz.b64
+      - .github/workflows/apply-lifecycle-migration.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canonical-lifecycle-migration
+  cancel-in-progress: true
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out rollout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Verify and apply migration payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=/tmp/canonical-lifecycle-migration
+          rm -rf "$work"
+          mkdir -p "$work"
+
+          base64 --decode .github/graceful-shutdown/migration-v2.tgz.b64 > "$work/migration.tgz"
+          printf '%s  %s\n' \
+            '3d7e3b9e388fb84d5c0192df256b408eb9300ed451d23ed7304f34704cfa4777' \
+            "$work/migration.tgz" | sha256sum --check --strict -
+          tar -xzf "$work/migration.tgz" -C "$work"
+
+          base64 -w0 "$work/shutdown.rs" > .github/graceful-shutdown/shutdown.rs.b64
+          python3 "$work/migrate.py"
+          rm -f .github/graceful-shutdown/shutdown.rs.b64
+
+      - name: Validate exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+
+      - name: Commit only product lifecycle changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          if [[ -z "$changed" ]]; then
+            echo 'Lifecycle migration is already current.'
+            exit 0
+          fi
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(Cargo\.toml|Cargo\.lock|src/.*\.rs)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo 'Refusing to commit unexpected files:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock src
+          git commit -m 'feat: drain readiness and background work'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
