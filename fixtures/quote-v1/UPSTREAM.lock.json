@@ -1,0 +1,16 @@
+{
+  "repository": "canonical-cloud/canonical-interfaces",
+  "fixtureCommit": "9882cdeac2c1043b749ed63a78628f1d287e0dc2",
+  "schemaCommit": "4c6ca63ca24fa214a1cb1a917ac27f1d5265916a",
+  "directory": "fixtures/quote-v1",
+  "files": {
+    "manifest.json": "fbe491c3023fc82ae2d88ba4e92b01448f4f09a4",
+    "create-request.json": "d76ee3a5e56440f92f25fad504fa1bb3eeae0bae",
+    "submission-response.json": "ea732b7ee4de6ac418232ecdb61d489954cc115d",
+    "detail-ready.json": "cfa8b6498f9f87317a48dd83774c0fec9106dfdf",
+    "list-response.json": "ed3331d842c32a776d9ca581bdba4b03cb34c893",
+    "status-event.json": "053f5cd80d29aa2b1c0ff214c14aa4d5cfa57c0d",
+    "problem.json": "1c7ef6cc9b42475f857823852c9b788424e13d06",
+    "retry-response.json": "8d71f86bb251e5fb376eb98b6f15387bcb9606f5"
+  }
+}
