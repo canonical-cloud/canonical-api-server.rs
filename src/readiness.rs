@@ -32,7 +32,7 @@ search_path_contract AS (
     ]::name[] AS ok
 ),
 object_ownership AS (
-    SELECT count(*) = 5 AS ok
+    SELECT count(*) = 6 AS ok
     FROM pg_class AS relation
     JOIN pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
@@ -42,7 +42,7 @@ object_ownership AS (
           = 'canonical_cloud__quote__migrator'
 ),
 rls_tables AS (
-    SELECT count(*) = 4 AS ok
+    SELECT count(*) = 5 AS ok
     FROM pg_class AS relation
     JOIN pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
@@ -50,6 +50,7 @@ rls_tables AS (
       AND relation.relname IN (
           'canonical_context',
           'canonical_quote',
+          'canonical_quote_operation',
           'canonical_quote_event',
           'canonical_model_attempt'
       )
@@ -58,18 +59,19 @@ rls_tables AS (
       AND relation.relforcerowsecurity
 ),
 owner_policies AS (
-    SELECT count(*) = 4 AS ok
+    SELECT count(*) = 5 AS ok
     FROM pg_policies
     WHERE schemaname = 'canonical_cloud__quote'
       AND policyname IN (
           'canonical_context_owner_policy',
           'canonical_quote_owner_policy',
+          'canonical_quote_operation_owner_policy',
           'canonical_quote_event_owner_policy',
           'canonical_model_attempt_owner_policy'
       )
 ),
 required_constraints AS (
-    SELECT count(*) = 12 AS ok
+    SELECT count(*) = 17 AS ok
     FROM pg_constraint
     WHERE connamespace = (
         SELECT oid
@@ -84,6 +86,11 @@ required_constraints AS (
           'canonical_quote_analysis_json_object_check',
           'canonical_quote_id_owner_unique',
           'canonical_quote_context_owner_fk',
+          'canonical_quote_operation_owner_key_pk',
+          'canonical_quote_operation_key_check',
+          'canonical_quote_operation_request_check',
+          'canonical_quote_operation_request_json_object_check',
+          'canonical_quote_operation_quote_owner_fk',
           'canonical_quote_event_details_json_object_check',
           'canonical_quote_event_quote_owner_fk',
           'canonical_model_attempt_status_finished_check',
@@ -102,6 +109,9 @@ required_indexes AS (
         ) IS NOT NULL
         AND to_regclass(
             'canonical_cloud__quote.canonical_quote_owner_created_idx'
+        ) IS NOT NULL
+        AND to_regclass(
+            'canonical_cloud__quote.canonical_quote_operation_quote_created_idx'
         ) IS NOT NULL
         AND to_regclass(
             'canonical_cloud__quote.canonical_quote_event_quote_sequence_idx'
@@ -175,6 +185,31 @@ runtime_privileges AS (
         AND NOT has_table_privilege(
             current_user,
             'canonical_cloud__quote.canonical_quote',
+            'TRUNCATE'
+        )
+        AND has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_quote_operation',
+            'SELECT'
+        )
+        AND has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_quote_operation',
+            'INSERT'
+        )
+        AND NOT has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_quote_operation',
+            'UPDATE'
+        )
+        AND NOT has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_quote_operation',
+            'DELETE'
+        )
+        AND NOT has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_quote_operation',
             'TRUNCATE'
         )
         AND has_table_privilege(
@@ -347,6 +382,8 @@ mod tests {
             "canonical_cloud__quote__api_rw",
             "canonical_cloud__quote__migrator",
             "canonical_quote_context_owner_fk",
+            "canonical_quote_operation_quote_owner_fk",
+            "canonical_quote_operation_owner_policy",
             "canonical_quote_event_quote_owner_fk",
             "canonical_model_attempt_quote_owner_fk",
             "canonical_model_attempt_status_finished_check",

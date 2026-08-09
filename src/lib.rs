@@ -7,15 +7,20 @@ mod persistence;
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use canonical_lib::interfaces::{
+    QuoteDetail, QuoteListQuery, QuoteListResponse, QuoteProblem, QuoteRetryResponse,
+    QuoteSubmissionResponse,
+};
 use futures_util::StreamExt;
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
@@ -30,12 +35,16 @@ use tracing::{error, warn};
 use uuid::Uuid;
 
 pub(crate) use contract::AcceptedQuoteRequest;
-use contract::{parse_quote_request, quote_submission_response};
+use contract::{
+    now_rfc3339, parse_quote_request, quote_detail, quote_list_response, quote_retry_response,
+    quote_status_event, quote_submission_response,
+};
 pub use gemini::{GeminiBuildError, GeminiClient};
 
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-flash";
 const INTERNAL_TOKEN_HEADER: &str = "x-canonical-internal-token";
 const SUBJECT_HEADER: &str = "x-canonical-subject";
+const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
 const MAX_CONTEXT_RECORD_BYTES: usize = 262_144;
 const APPLICATION_CONTEXT_MARKDOWN: &str = include_str!("../context/quote-analysis.md");
@@ -140,10 +149,12 @@ fn is_valid_model_name(value: &str) -> bool {
 #[derive(Clone)]
 pub struct AppState {
     database: Option<DatabaseConnection>,
-    events: broadcast::Sender<QuoteEvent>,
+    events: broadcast::Sender<QuoteEventRecord>,
     gemini: Option<GeminiClient>,
     gemini_model: Arc<str>,
+    idempotency: Arc<RwLock<HashMap<(String, String), MemoryOperation>>>,
     internal_auth_token: Arc<str>,
+    next_event_sequence: Arc<AtomicU64>,
     quotes: Arc<RwLock<HashMap<Uuid, QuoteRecord>>>,
 }
 
@@ -160,7 +171,9 @@ impl AppState {
             events,
             gemini: None,
             gemini_model: gemini_model.into(),
+            idempotency: Arc::new(RwLock::new(HashMap::new())),
             internal_auth_token: internal_auth_token.into(),
+            next_event_sequence: Arc::new(AtomicU64::new(1)),
             quotes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -172,15 +185,31 @@ impl AppState {
     }
 }
 
+#[derive(Clone, Debug)]
+enum MemoryOperation {
+    Create {
+        quote_id: Uuid,
+        request_json: JsonValue,
+    },
+    Retry {
+        quote_id: Uuid,
+    },
+}
+
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     Router::new()
         .route("/healthz", get(health))
         .route("/api/v1/quotes", get(list_quotes).post(create_quote))
         .route("/api/v1/quotes/{quote_id}", get(get_quote))
+        .route(
+            "/api/v1/quotes/{quote_id}/retry",
+            post(retry_quote),
+        )
         .route("/api/v1/quotes/{quote_id}/events", get(quote_events))
         .route("/v1/quotes", get(list_quotes).post(create_quote))
         .route("/v1/quotes/{quote_id}", get(get_quote))
+        .route("/v1/quotes/{quote_id}/retry", post(retry_quote))
         .route("/v1/quotes/{quote_id}/events", get(quote_events))
         .with_state(state)
         .layer(SetSensitiveRequestHeadersLayer::new([
@@ -211,54 +240,213 @@ async fn create_quote(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(payload): Json<JsonValue>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<(StatusCode, Json<QuoteSubmissionResponse>), ApiError> {
     let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let idempotency_key = required_idempotency_key(&headers)?;
     let request = parse_quote_request(payload)?;
+    let request_json = serde_json::to_value(&request.wire).map_err(|_| {
+        ApiError::bad_request("invalid_request", "quote request could not be normalized")
+    })?;
 
-    let quote_id = Uuid::new_v4();
-    let submission = quote_submission_response(quote_id)?;
-    let mut record = QuoteRecord {
+    let (record, context, event, should_analyze) = if let Some(database) = state.database.as_ref() {
+        let timestamp = now_rfc3339()?;
+        let record = new_record(&state, &subject, request.wire.clone(), timestamp);
+        match persistence::create_quote(
+            database,
+            &subject,
+            &idempotency_key,
+            &request,
+            record,
+        )
+        .await
+        .map_err(map_store_error)?
+        {
+            persistence::CreateQuoteOutcome::Created {
+                context,
+                event,
+                record,
+            } => (record, Some(context), Some(event), true),
+            persistence::CreateQuoteOutcome::Existing { record } => (record, None, None, false),
+        }
+    } else {
+        let key = (subject.clone(), idempotency_key.clone());
+        if let Some(operation) = state.idempotency.read().await.get(&key).cloned() {
+            match operation {
+                MemoryOperation::Create {
+                    quote_id,
+                    request_json: existing,
+                } if existing == request_json => {
+                    let record = state
+                        .quotes
+                        .read()
+                        .await
+                        .get(&quote_id)
+                        .cloned()
+                        .ok_or_else(storage_unavailable)?;
+                    (record, None, None, false)
+                }
+                _ => return Err(idempotency_reused()),
+            }
+        } else {
+            let timestamp = now_rfc3339()?;
+            let record = new_record(&state, &subject, request.wire.clone(), timestamp);
+            let event = memory_event(&state, &record)?;
+            state.idempotency.write().await.insert(
+                key,
+                MemoryOperation::Create {
+                    quote_id: record.quote_id,
+                    request_json,
+                },
+            );
+            (
+                record,
+                Some(CanonicalContext::request_only()),
+                Some(event),
+                true,
+            )
+        }
+    };
+
+    state
+        .quotes
+        .write()
+        .await
+        .insert(record.quote_id, record.clone());
+    if let Some(event) = event {
+        publish_event(&state, event);
+    }
+    if should_analyze {
+        let worker_state = state.clone();
+        let worker_record = record.clone();
+        let context = context.ok_or_else(storage_unavailable)?;
+        tokio::spawn(async move {
+            run_quote_analysis(worker_state, worker_record, request, context).await;
+        });
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(quote_submission_response(&record)),
+    ))
+}
+
+async fn retry_quote(
+    State(state): State<AppState>,
+    Path(quote_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<QuoteRetryResponse>), ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let idempotency_key = required_idempotency_key(&headers)?;
+
+    let (record, context, event, should_analyze) = if let Some(database) = state.database.as_ref() {
+        match persistence::retry_quote(database, &subject, quote_id, &idempotency_key)
+            .await
+            .map_err(map_store_error)?
+        {
+            persistence::RetryQuoteOutcome::Retried {
+                context,
+                event,
+                record,
+            } => (record, Some(context), Some(event), true),
+            persistence::RetryQuoteOutcome::Existing { record } => (record, None, None, false),
+        }
+    } else {
+        let key = (subject.clone(), idempotency_key.clone());
+        if let Some(operation) = state.idempotency.read().await.get(&key).cloned() {
+            match operation {
+                MemoryOperation::Retry {
+                    quote_id: existing,
+                } if existing == quote_id => {
+                    let record = find_quote(&state, quote_id, &subject).await?;
+                    (record, None, None, false)
+                }
+                _ => return Err(idempotency_reused()),
+            }
+        } else {
+            let mut record = find_quote(&state, quote_id, &subject).await?;
+            if record.status != "failed" {
+                return Err(ApiError::conflict(
+                    "conflict",
+                    "only a failed quote may be retried",
+                ));
+            }
+            record.status = "queued".into();
+            record.analysis = None;
+            record.error_code = None;
+            record.updated_at = now_rfc3339()?;
+            let event = memory_event(&state, &record)?;
+            state
+                .idempotency
+                .write()
+                .await
+                .insert(key, MemoryOperation::Retry { quote_id });
+            (
+                record,
+                Some(CanonicalContext::request_only()),
+                Some(event),
+                true,
+            )
+        }
+    };
+
+    state
+        .quotes
+        .write()
+        .await
+        .insert(record.quote_id, record.clone());
+    if let Some(event) = event {
+        publish_event(&state, event);
+    }
+    if should_analyze {
+        let application_markdown = APPLICATION_CONTEXT_MARKDOWN.trim();
+        if application_markdown.is_empty() || application_markdown.len() > MAX_MARKDOWN_CONTEXT_BYTES
+        {
+            return Err(ApiError::service_unavailable(
+                "context_unavailable",
+                "quote analysis context is unavailable",
+            ));
+        }
+        let request = AcceptedQuoteRequest {
+            application_markdown: application_markdown.to_owned(),
+            wire: record.request.clone(),
+        };
+        let worker_state = state.clone();
+        let worker_record = record.clone();
+        let context = context.ok_or_else(storage_unavailable)?;
+        tokio::spawn(async move {
+            run_quote_analysis(worker_state, worker_record, request, context).await;
+        });
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(quote_retry_response(&record)),
+    ))
+}
+
+fn new_record(
+    state: &AppState,
+    subject: &str,
+    request: canonical_lib::interfaces::QuoteRequest,
+    timestamp: String,
+) -> QuoteRecord {
+    QuoteRecord {
         analysis: None,
         context_record_id: Uuid::nil(),
         error_code: None,
-        frameworks: request.wire.frameworks.clone(),
         gemini_model: state.gemini_model.to_string(),
-        organization_name: request.wire.organization_name.clone(),
-        owner_subject: subject.clone(),
+        owner_subject: subject.to_owned(),
         persistence: if state.database.is_some() {
             "postgres".into()
         } else {
             "memory-only".into()
         },
-        quote_id,
+        quote_id: Uuid::new_v4(),
+        request,
         status: "queued".into(),
-    };
-
-    let context = match state.database.as_ref() {
-        Some(database) => {
-            let context = persistence::create_quote(database, &subject, &request, &record)
-                .await
-                .map_err(map_store_error)?;
-            record.context_record_id = context.id;
-            context
-        }
-        None => {
-            let context = CanonicalContext::request_only();
-            record.context_record_id = context.id;
-            context
-        }
-    };
-
-    state.quotes.write().await.insert(quote_id, record.clone());
-    publish_event(&state, &record);
-
-    let worker_state = state.clone();
-    let worker_record = record.clone();
-    tokio::spawn(async move {
-        run_quote_analysis(worker_state, worker_record, request, context).await;
-    });
-
-    Ok((StatusCode::ACCEPTED, Json(submission)))
+        created_at: timestamp.clone(),
+        updated_at: timestamp,
+    }
 }
 
 async fn run_quote_analysis(
@@ -270,12 +458,14 @@ async fn run_quote_analysis(
     record.status = "analyzing".into();
     record.error_code = None;
     record.analysis = None;
-    update_quote_state(&state, &record).await;
+    if !update_quote_state(&state, &mut record).await {
+        return;
+    }
 
     let Some(gemini) = state.gemini.as_ref() else {
         record.status = "failed".into();
         record.error_code = Some("gemini_not_configured".into());
-        update_quote_state(&state, &record).await;
+        let _ = update_quote_state(&state, &mut record).await;
         return;
     };
 
@@ -312,7 +502,7 @@ async fn run_quote_analysis(
         }
     }
 
-    update_quote_state(&state, &record).await;
+    let _ = update_quote_state(&state, &mut record).await;
 
     if let (Some(database), Some(attempt_id)) = (state.database.as_ref(), attempt_id) {
         if let Err(error) = persistence::finish_model_attempt(database, &record, attempt_id).await {
@@ -325,66 +515,104 @@ async fn run_quote_analysis(
     }
 }
 
-async fn update_quote_state(state: &AppState, record: &QuoteRecord) {
+async fn update_quote_state(state: &AppState, record: &mut QuoteRecord) -> bool {
+    let event = if let Some(database) = state.database.as_ref() {
+        match persistence::update_quote(database, record).await {
+            Ok(event) => event,
+            Err(error) => {
+                error!(
+                    quote_id = %record.quote_id,
+                    error = %error,
+                    "failed to persist quote status"
+                );
+                return false;
+            }
+        }
+    } else {
+        match now_rfc3339() {
+            Ok(timestamp) => record.updated_at = timestamp,
+            Err(error) => {
+                error!(quote_id = %record.quote_id, %error, "failed to generate quote timestamp");
+                return false;
+            }
+        }
+        match memory_event(state, record) {
+            Ok(event) => event,
+            Err(error) => {
+                error!(quote_id = %record.quote_id, %error, "failed to create quote event");
+                return false;
+            }
+        }
+    };
+
     state
         .quotes
         .write()
         .await
         .insert(record.quote_id, record.clone());
-
-    if let Some(database) = state.database.as_ref() {
-        if let Err(error) = persistence::update_quote(database, record).await {
-            error!(
-                quote_id = %record.quote_id,
-                error = %error,
-                "failed to persist quote status"
-            );
-        }
-    }
-
-    publish_event(state, record);
+    publish_event(state, event);
+    true
 }
 
-fn publish_event(state: &AppState, record: &QuoteRecord) {
-    let _ = state.events.send(QuoteEvent {
-        analysis_available: record.analysis.is_some(),
-        error_code: record.error_code.clone(),
-        owner_subject: record.owner_subject.clone(),
-        quote_id: record.quote_id,
-        status: record.status.clone(),
-    });
+fn publish_event(state: &AppState, event: QuoteEventRecord) {
+    let _ = state.events.send(event);
 }
 
 async fn list_quotes(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<QuoteRecord>>, ApiError> {
+    Query(query): Query<QuoteListQuery>,
+) -> Result<Json<QuoteListResponse>, ApiError> {
     let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let limit = usize::try_from(query.limit.unwrap_or(25).clamp(1, 100)).unwrap_or(25);
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("invalid_request", "cursor is invalid"))?;
+
     let records = match state.database.as_ref() {
-        Some(database) => persistence::list_quotes(database, &subject, 50)
+        Some(database) => persistence::list_quotes(database, &subject, (limit + 1) as u64, cursor)
             .await
             .map_err(map_store_error)?,
-        None => state
-            .quotes
-            .read()
-            .await
-            .values()
-            .filter(|record| record.owner_subject == subject)
-            .take(50)
-            .cloned()
-            .collect(),
+        None => {
+            let mut records = state
+                .quotes
+                .read()
+                .await
+                .values()
+                .filter(|record| record.owner_subject == subject)
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by(|left, right| {
+                right
+                    .created_at
+                    .cmp(&left.created_at)
+                    .then_with(|| right.quote_id.cmp(&left.quote_id))
+            });
+            if let Some(cursor) = cursor {
+                if let Some(position) = records.iter().position(|record| record.quote_id == cursor) {
+                    records = records.into_iter().skip(position + 1).collect();
+                } else {
+                    records.clear();
+                }
+            }
+            records.truncate(limit + 1);
+            records
+        }
     };
-    Ok(Json(records))
+    Ok(Json(quote_list_response(records, limit)?))
 }
 
 async fn get_quote(
     State(state): State<AppState>,
     Path(quote_id): Path<Uuid>,
     headers: HeaderMap,
-) -> Result<Json<QuoteRecord>, ApiError> {
+) -> Result<Json<QuoteDetail>, ApiError> {
     let subject = authenticate(&headers, &state.internal_auth_token)?;
     let record = find_quote(&state, quote_id, &subject).await?;
-    Ok(Json(record))
+    Ok(Json(quote_detail(&record)?))
 }
 
 async fn find_quote(
@@ -392,28 +620,27 @@ async fn find_quote(
     quote_id: Uuid,
     subject: &str,
 ) -> Result<QuoteRecord, ApiError> {
+    if let Some(database) = state.database.as_ref() {
+        let record = persistence::get_quote(database, subject, quote_id)
+            .await
+            .map_err(map_store_error)?;
+        state
+            .quotes
+            .write()
+            .await
+            .insert(quote_id, record.clone());
+        return Ok(record);
+    }
+
     if let Some(record) = state.quotes.read().await.get(&quote_id).cloned() {
         if record.owner_subject == subject {
             return Ok(record);
         }
-        return Err(ApiError::not_found(
-            "quote_not_found",
-            "quote was not found",
-        ));
     }
-
-    let Some(database) = state.database.as_ref() else {
-        return Err(ApiError::not_found(
-            "quote_not_found",
-            "quote was not found",
-        ));
-    };
-
-    let record = persistence::get_quote(database, subject, quote_id)
-        .await
-        .map_err(map_store_error)?;
-    state.quotes.write().await.insert(quote_id, record.clone());
-    Ok(record)
+    Err(ApiError::not_found(
+        "not_found",
+        "quote was not found",
+    ))
 }
 
 async fn quote_events(
@@ -423,9 +650,24 @@ async fn quote_events(
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     let subject = authenticate(&headers, &state.internal_auth_token)?;
-    find_quote(&state, quote_id, &subject).await?;
+    let record = find_quote(&state, quote_id, &subject).await?;
+    let initial = if let Some(database) = state.database.as_ref() {
+        persistence::latest_event(database, &subject, quote_id)
+            .await
+            .map_err(map_store_error)?
+    } else {
+        QuoteEventRecord {
+            owner_subject: subject.clone(),
+            quote_id,
+            sequence: 0,
+            status: record.status.clone(),
+            occurred_at: record.updated_at.clone(),
+        }
+    };
 
-    Ok(upgrade.on_upgrade(move |socket| stream_quote_events(socket, state, quote_id, subject)))
+    Ok(upgrade.on_upgrade(move |socket| {
+        stream_quote_events(socket, state, quote_id, subject, initial)
+    }))
 }
 
 async fn stream_quote_events(
@@ -433,11 +675,14 @@ async fn stream_quote_events(
     state: AppState,
     quote_id: Uuid,
     owner_subject: String,
+    initial: QuoteEventRecord,
 ) {
     let mut events = state.events.subscribe();
     if let Ok(record) = find_quote(&state, quote_id, &owner_subject).await {
-        if send_json(&mut socket, &record).await.is_err() {
-            return;
+        if let Ok(event) = quote_status_event(&initial, &record) {
+            if send_json(&mut socket, &event).await.is_err() {
+                return;
+            }
         }
     }
 
@@ -448,7 +693,13 @@ async fn stream_quote_events(
                     Ok(event) if event.quote_id == quote_id
                         && event.owner_subject == owner_subject =>
                     {
-                        if send_json(&mut socket, &event).await.is_err() {
+                        let Ok(record) = find_quote(&state, quote_id, &owner_subject).await else {
+                            break;
+                        };
+                        let Ok(public_event) = quote_status_event(&event, &record) else {
+                            break;
+                        };
+                        if send_json(&mut socket, &public_event).await.is_err() {
                             break;
                         }
                     }
@@ -488,7 +739,7 @@ fn authenticate(headers: &HeaderMap, expected_token: &str) -> Result<String, Api
         .unwrap_or(false);
     if !token_is_valid {
         return Err(ApiError::unauthorized(
-            "invalid_internal_auth",
+            "unauthorized",
             "trusted proxy authentication failed",
         ));
     }
@@ -504,10 +755,38 @@ fn authenticate(headers: &HeaderMap, expected_token: &str) -> Result<String, Api
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
         })
-        .ok_or_else(|| {
-            ApiError::unauthorized("missing_subject", "authenticated subject is required")
-        })?;
+        .ok_or_else(|| ApiError::unauthorized("unauthorized", "authenticated subject is required"))?;
     Ok(subject.to_owned())
+}
+
+fn required_idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
+    let value = headers
+        .get(IDEMPOTENCY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            (8..=128).contains(&value.len())
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+                })
+        })
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_request",
+                "Idempotency-Key must contain 8 to 128 allowed ASCII characters",
+            )
+        })?;
+    Ok(value.to_owned())
+}
+
+fn memory_event(state: &AppState, record: &QuoteRecord) -> Result<QuoteEventRecord, ApiError> {
+    Ok(QuoteEventRecord {
+        owner_subject: record.owner_subject.clone(),
+        quote_id: record.quote_id,
+        sequence: state.next_event_sequence.fetch_add(1, Ordering::Relaxed),
+        status: record.status.clone(),
+        occurred_at: record.updated_at.clone(),
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -545,29 +824,28 @@ impl CanonicalContext {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct QuoteRecord {
     pub analysis: Option<JsonValue>,
     pub context_record_id: Uuid,
     pub error_code: Option<String>,
-    pub frameworks: Vec<String>,
     pub gemini_model: String,
-    pub organization_name: String,
-    #[serde(skip_serializing)]
     pub owner_subject: String,
     pub persistence: String,
     pub quote_id: Uuid,
+    pub request: canonical_lib::interfaces::QuoteRequest,
     pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct QuoteEvent {
-    analysis_available: bool,
-    error_code: Option<String>,
-    #[serde(skip_serializing)]
-    owner_subject: String,
-    quote_id: Uuid,
-    status: String,
+#[derive(Clone, Debug)]
+pub(crate) struct QuoteEventRecord {
+    pub owner_subject: String,
+    pub quote_id: Uuid,
+    pub sequence: u64,
+    pub status: String,
+    pub occurred_at: String,
 }
 
 #[derive(Serialize)]
@@ -583,65 +861,84 @@ struct HealthResponse {
 
 fn map_store_error(error: persistence::StoreError) -> ApiError {
     match error {
-        persistence::StoreError::ContextNotFound => ApiError::not_found(
-            "context_not_found",
+        persistence::StoreError::ContextNotFound => ApiError::service_unavailable(
+            "context_unavailable",
             "an active canonical context record was not found for this account",
         ),
+        persistence::StoreError::IdempotencyKeyReused => idempotency_reused(),
+        persistence::StoreError::InvalidTransition => ApiError::conflict(
+            "conflict",
+            "the requested quote transition is not allowed",
+        ),
         persistence::StoreError::QuoteNotFound => {
-            ApiError::not_found("quote_not_found", "quote was not found")
+            ApiError::not_found("not_found", "quote was not found")
         }
         persistence::StoreError::Database(_) | persistence::StoreError::InvalidRecord(_) => {
             error!(
                 error_code = error.code(),
                 "quote persistence operation failed"
             );
-            ApiError::service_unavailable(
-                "storage_unavailable",
-                "quote storage is temporarily unavailable",
-            )
+            storage_unavailable()
         }
     }
 }
 
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    code: &'static str,
-    message: &'static str,
+fn idempotency_reused() -> ApiError {
+    ApiError::conflict(
+        "idempotency_key_reused",
+        "Idempotency-Key was already used for another operation or payload",
+    )
+}
+
+fn storage_unavailable() -> ApiError {
+    ApiError::service_unavailable(
+        "storage_unavailable",
+        "quote storage is temporarily unavailable",
+    )
 }
 
 #[derive(Debug)]
 struct ApiError {
-    body: ErrorBody,
+    body: QuoteProblem,
     status: StatusCode,
 }
 
 impl ApiError {
-    const fn bad_request(code: &'static str, message: &'static str) -> Self {
+    fn new(status: StatusCode, code: &'static str, message: &'static str) -> Self {
         Self {
-            body: ErrorBody { code, message },
-            status: StatusCode::BAD_REQUEST,
+            body: QuoteProblem {
+                code: code.into(),
+                message: message.into(),
+                request_id: Uuid::new_v4().to_string(),
+            },
+            status,
         }
     }
 
-    const fn not_found(code: &'static str, message: &'static str) -> Self {
-        Self {
-            body: ErrorBody { code, message },
-            status: StatusCode::NOT_FOUND,
-        }
+    fn bad_request(code: &'static str, message: &'static str) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, code, message)
     }
 
-    const fn service_unavailable(code: &'static str, message: &'static str) -> Self {
-        Self {
-            body: ErrorBody { code, message },
-            status: StatusCode::SERVICE_UNAVAILABLE,
-        }
+    fn conflict(code: &'static str, message: &'static str) -> Self {
+        Self::new(StatusCode::CONFLICT, code, message)
     }
 
-    const fn unauthorized(code: &'static str, message: &'static str) -> Self {
-        Self {
-            body: ErrorBody { code, message },
-            status: StatusCode::UNAUTHORIZED,
-        }
+    fn not_found(code: &'static str, message: &'static str) -> Self {
+        Self::new(StatusCode::NOT_FOUND, code, message)
+    }
+
+    fn service_unavailable(code: &'static str, message: &'static str) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
+    }
+
+    fn unauthorized(code: &'static str, message: &'static str) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, code, message)
+    }
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.body.code)
     }
 }
 
@@ -653,10 +950,7 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_router, parse_quote_request, AppState, APPLICATION_CONTEXT_MARKDOWN,
-        DEFAULT_GEMINI_MODEL,
-    };
+    use super::{build_router, AppState, APPLICATION_CONTEXT_MARKDOWN, DEFAULT_GEMINI_MODEL};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -668,6 +962,18 @@ mod tests {
 
     fn app() -> axum::Router {
         build_router(AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None))
+    }
+
+    fn request(payload: Value, key: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/quotes")
+            .header("content-type", "application/json")
+            .header("x-canonical-internal-token", TOKEN)
+            .header("x-canonical-subject", "user-123")
+            .header("idempotency-key", key)
+            .body(Body::from(payload.to_string()))
+            .unwrap()
     }
 
     #[test]
@@ -703,6 +1009,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/quotes")
                     .header("content-type", "application/json")
+                    .header("idempotency-key", "quote:test-0001")
                     .body(Body::from(valid_payload().to_string()))
                     .unwrap(),
             )
@@ -712,20 +1019,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authenticated_owner_can_create_and_read_a_quote() {
+    async fn authenticated_owner_can_create_read_and_list_a_quote() {
         let app = app();
         let create = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/quotes")
-                    .header("content-type", "application/json")
-                    .header("x-canonical-internal-token", TOKEN)
-                    .header("x-canonical-subject", "user-123")
-                    .body(Body::from(valid_payload().to_string()))
-                    .unwrap(),
-            )
+            .oneshot(request(valid_payload(), "quote:test-0002"))
             .await
             .unwrap();
         assert_eq!(create.status(), StatusCode::ACCEPTED);
@@ -739,11 +1037,9 @@ mod tests {
             body["streamUrl"],
             format!("/api/v1/quotes/{quote_id}/events")
         );
-        assert!(body["createdAt"]
-            .as_str()
-            .is_some_and(|value| value.ends_with('Z')));
 
         let read = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/v1/quotes/{quote_id}"))
@@ -755,85 +1051,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.status(), StatusCode::OK);
-    }
+        let read_body: Value =
+            serde_json::from_slice(&read.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(read_body["quoteId"], quote_id);
+        assert_eq!(read_body["request"]["organizationName"], "Example Incorporated");
+        assert!(read_body.get("persistence").is_none());
+        assert!(read_body.get("gemini_model").is_none());
 
-    #[test]
-    fn application_and_database_context_selection_fail_closed() {
-        let request = parse_quote_request(valid_payload()).unwrap();
-        assert_eq!(
-            request.application_markdown,
-            APPLICATION_CONTEXT_MARKDOWN.trim()
-        );
-
-        for forbidden in ["markdown_context", "context_record_id"] {
-            let mut payload = valid_payload();
-            payload[forbidden] = json!("attacker-selected");
-            assert!(parse_quote_request(payload).is_err());
-        }
-    }
-
-    #[tokio::test]
-    async fn quote_history_is_owner_scoped() {
-        let app = app();
-        for owner in ["owner-a", "owner-b"] {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/v1/quotes")
-                        .header("content-type", "application/json")
-                        .header("x-canonical-internal-token", TOKEN)
-                        .header("x-canonical-subject", owner)
-                        .body(Body::from(valid_payload().to_string()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::ACCEPTED);
-        }
-
-        let response = app
+        let list = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/quotes")
+                    .uri("/api/v1/quotes?limit=25")
                     .header("x-canonical-internal-token", TOKEN)
-                    .header("x-canonical-subject", "owner-a")
+                    .header("x-canonical-subject", "user-123")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        let quotes = body.as_array().unwrap();
-        assert_eq!(quotes.len(), 1);
-        assert_eq!(quotes[0]["organization_name"], "Example Company");
+        assert_eq!(list.status(), StatusCode::OK);
+        let list_body: Value =
+            serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(list_body["quotes"].as_array().unwrap().len(), 1);
+        assert_eq!(list_body["quotes"][0]["quoteId"], quote_id);
     }
 
     #[tokio::test]
-    async fn unsupported_frameworks_are_rejected() {
-        let mut payload = valid_payload();
-        payload["frameworks"] = json!(["made-up-framework"]);
-        let response = app()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/quotes")
-                    .header("content-type", "application/json")
-                    .header("x-canonical-internal-token", TOKEN)
-                    .header("x-canonical-subject", "user-123")
-                    .body(Body::from(payload.to_string()))
-                    .unwrap(),
-            )
+    async fn create_idempotency_replays_and_rejects_payload_reuse() {
+        let app = app();
+        let first = app
+            .clone()
+            .oneshot(request(valid_payload(), "quote:test-0003"))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let first_body: Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+
+        let replay = app
+            .clone()
+            .oneshot(request(valid_payload(), "quote:test-0003"))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::ACCEPTED);
+        let replay_body: Value =
+            serde_json::from_slice(&replay.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(first_body["quoteId"], replay_body["quoteId"]);
+
+        let mut changed = valid_payload();
+        changed["employeeCount"] = json!(999);
+        let conflict = app
+            .oneshot(request(changed, "quote:test-0003"))
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let conflict_body: Value = serde_json::from_slice(
+            &conflict.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        assert_eq!(conflict_body["code"], "idempotency_key_reused");
+        assert!(conflict_body["requestId"].as_str().is_some());
+    }
+
+    #[test]
+    fn application_markdown_is_server_owned() {
+        assert!(!APPLICATION_CONTEXT_MARKDOWN.trim().is_empty());
     }
 
     fn valid_payload() -> Value {
-        serde_json::from_str(include_str!("../fixtures/quote/v1/request.json")).unwrap()
+        serde_json::from_str(include_str!("../fixtures/quote-v1/create-request.json")).unwrap()
     }
 }

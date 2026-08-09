@@ -25,6 +25,10 @@
       "INSERT",
       "UPDATE"
     ],
+    "appendOnlyTables": [
+      "canonical_quote_operation",
+      "canonical_quote_event"
+    ],
     "webRuntime": [],
     "ddlOwner": "canonical_cloud__quote__migrator"
   },
@@ -32,7 +36,7 @@
     "tool": "declarative-migrations/declarative-postgres-migrate.rs",
     "revision": "d05a7880987ddaa271fa88b52c787390ef12b899",
     "source": "db/schema.sql",
-    "sourceSha256": "712f1269da3c8dfd381af9c69a81e549a4eb52be3e4f49558ec1a5edf205e191",
+    "sourceSha256": "124e7b3386fbe7a9cb4a0a8a7ba3c5955abef6e515acde6b365f76a625cd6e8a",
     "bootstrap": "db/bootstrap.sql",
     "grants": "db/grants.sql"
   },
