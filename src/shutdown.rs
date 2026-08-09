@@ -6,12 +6,7 @@ use std::{
 
 use axum::Router;
 use axum_server::Handle;
-use tokio::{
-    net::TcpListener,
-    sync::mpsc,
-    task::JoinHandle,
-    time::sleep,
-};
+use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle, time::sleep};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -140,10 +135,7 @@ const fn reduce(state: State, event: Event) -> (State, Action) {
     }
 }
 
-fn event_channel() -> (
-    mpsc::UnboundedSender<Event>,
-    mpsc::UnboundedReceiver<Event>,
-) {
+fn event_channel() -> (mpsc::UnboundedSender<Event>, mpsc::UnboundedReceiver<Event>) {
     let (tx, rx) = mpsc::unbounded_channel();
 
     #[cfg(unix)]
@@ -234,11 +226,7 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-pub async fn serve(
-    listener: TcpListener,
-    router: Router,
-    config: Config,
-) -> io::Result<Outcome> {
+pub async fn serve(listener: TcpListener, router: Router, config: Config) -> io::Result<Outcome> {
     let (events_tx, events_rx) = event_channel();
     serve_with_events(listener, router, config, events_tx, events_rx).await
 }
