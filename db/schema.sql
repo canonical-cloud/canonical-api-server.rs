@@ -9,7 +9,10 @@ CREATE TABLE canonical_cloud__quote.canonical_context (
     active boolean NOT NULL DEFAULT TRUE,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (id, owner_subject)
+    CONSTRAINT canonical_context_json_object_check
+        CHECK (jsonb_typeof(context_json) = 'object'),
+    CONSTRAINT canonical_context_id_owner_unique
+        UNIQUE (id, owner_subject)
 );
 
 CREATE TABLE canonical_cloud__quote.canonical_quote (
@@ -28,6 +31,17 @@ CREATE TABLE canonical_cloud__quote.canonical_quote (
     ),
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT canonical_quote_request_json_object_check
+        CHECK (jsonb_typeof(request_json) = 'object'),
+    CONSTRAINT canonical_quote_context_snapshot_json_object_check
+        CHECK (jsonb_typeof(context_snapshot_json) = 'object'),
+    CONSTRAINT canonical_quote_analysis_json_object_check
+        CHECK (
+            analysis_json IS NULL
+            OR jsonb_typeof(analysis_json) = 'object'
+        ),
+    CONSTRAINT canonical_quote_id_owner_unique
+        UNIQUE (id, owner_subject),
     CONSTRAINT canonical_quote_context_owner_fk
         FOREIGN KEY (context_record_id, owner_subject)
         REFERENCES canonical_cloud__quote.canonical_context (id, owner_subject)
@@ -36,20 +50,22 @@ CREATE TABLE canonical_cloud__quote.canonical_quote (
 
 CREATE TABLE canonical_cloud__quote.canonical_quote_event (
     sequence_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    quote_id uuid NOT NULL
-        REFERENCES canonical_cloud__quote.canonical_quote (id)
-        ON DELETE CASCADE,
+    quote_id uuid NOT NULL,
     owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
     status text NOT NULL CHECK (status IN ('queued', 'analyzing', 'completed', 'failed')),
     details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT canonical_quote_event_details_json_object_check
+        CHECK (jsonb_typeof(details_json) = 'object'),
+    CONSTRAINT canonical_quote_event_quote_owner_fk
+        FOREIGN KEY (quote_id, owner_subject)
+        REFERENCES canonical_cloud__quote.canonical_quote (id, owner_subject)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE canonical_cloud__quote.canonical_model_attempt (
     id uuid PRIMARY KEY,
-    quote_id uuid NOT NULL
-        REFERENCES canonical_cloud__quote.canonical_quote (id)
-        ON DELETE CASCADE,
+    quote_id uuid NOT NULL,
     owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
     provider text NOT NULL DEFAULT 'google-gemini'
         CHECK (provider = 'google-gemini'),
@@ -60,10 +76,17 @@ CREATE TABLE canonical_cloud__quote.canonical_model_attempt (
     ),
     started_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at timestamptz,
-    CHECK (
+    CONSTRAINT canonical_model_attempt_status_finished_check CHECK (
         (status = 'started' AND finished_at IS NULL)
         OR (status IN ('completed', 'failed') AND finished_at IS NOT NULL)
-    )
+    ),
+    CONSTRAINT canonical_model_attempt_time_order_check CHECK (
+        finished_at IS NULL OR finished_at >= started_at
+    ),
+    CONSTRAINT canonical_model_attempt_quote_owner_fk
+        FOREIGN KEY (quote_id, owner_subject)
+        REFERENCES canonical_cloud__quote.canonical_quote (id, owner_subject)
+        ON DELETE CASCADE
 );
 
 CREATE INDEX canonical_context_owner_active_idx
