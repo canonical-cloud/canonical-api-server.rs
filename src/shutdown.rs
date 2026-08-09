@@ -22,7 +22,6 @@ pub enum Event {
     SigTerm,
     Eof,
     Deadline,
-    Drained,
     DrainFailed,
 }
 
@@ -31,7 +30,6 @@ enum Action {
     None,
     StartGraceful,
     Force,
-    Complete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,12 +105,6 @@ const fn reduce(state: State, event: Event) -> (State, Action) {
             }
         }
         Phase::Draining => {
-            if matches!(event, Event::Drained) {
-                let mut next = state;
-                next.phase = Phase::Stopped;
-                return (next, Action::Complete);
-            }
-
             let force = matches!(
                 event,
                 Event::Deadline | Event::DrainFailed | Event::SigInt | Event::SigTerm
@@ -376,9 +368,6 @@ async fn serve_with_events(
                             elapsed_ms = millis(started_at.elapsed()),
                             "forcing shutdown; active HTTP and WebSocket connections will be dropped",
                         );
-                        handle.shutdown();
-                    }
-                    Action::Complete => {
                         handle.shutdown();
                     }
                 }
