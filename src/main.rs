@@ -1,10 +1,24 @@
 #![forbid(unsafe_code)]
 
+mod shutdown;
+
+use std::{io, time::Duration};
+
 use canonical_api_server::{build_router, AppState, Config, GeminiClient};
 use sea_orm::Database;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+fn shutdown_grace() -> Duration {
+    const DEFAULT_MS: u64 = 30_000;
+    let milliseconds = std::env::var("SHUTDOWN_GRACE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MS);
+    Duration::from_millis(milliseconds)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,6 +52,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gemini_model = %config.gemini_model,
         "canonical API listening"
     );
-    axum::serve(listener, build_router(state)).await?;
-    Ok(())
+    let outcome = shutdown::serve(
+        listener,
+        build_router(state),
+        shutdown::Config {
+            grace: shutdown_grace(),
+            ..shutdown::Config::default()
+        },
+    )
+    .await?;
+
+    match outcome {
+        shutdown::Outcome::Graceful => Ok(()),
+        shutdown::Outcome::Forced(trigger) => Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!("server shutdown forced by {trigger:?}"),
+        )
+        .into()),
+    }
 }
