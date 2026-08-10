@@ -931,7 +931,10 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_router, AppState, APPLICATION_CONTEXT_MARKDOWN, DEFAULT_GEMINI_MODEL};
+    use super::{
+        build_router, parse_quote_request, AppState, APPLICATION_CONTEXT_MARKDOWN,
+        DEFAULT_GEMINI_MODEL,
+    };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -1099,6 +1102,13 @@ mod tests {
     #[test]
     fn application_markdown_is_server_owned() {
         assert!(!APPLICATION_CONTEXT_MARKDOWN.trim().is_empty());
+    }
+
+    #[test]
+    fn pinned_interface_request_fixture_is_accepted() {
+        let fixture = serde_json::from_str(include_str!("../fixtures/quote/v1/request.json"))
+            .expect("pinned interface fixture must be valid JSON");
+        parse_quote_request(fixture).expect("pinned interface fixture must satisfy quote v1");
     }
 
     fn valid_payload() -> Value {
