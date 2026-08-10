@@ -24,7 +24,7 @@ CREATE TABLE canonical_cloud__quote.canonical_quote (
     context_snapshot_markdown text NOT NULL,
     context_snapshot_json jsonb NOT NULL,
     gemini_model text NOT NULL CHECK (char_length(gemini_model) BETWEEN 1 AND 128),
-    status text NOT NULL CHECK (status IN ('queued', 'analyzing', 'completed', 'failed')),
+    status text NOT NULL CHECK (status IN ('queued', 'analyzing', 'ready', 'failed')),
     analysis_json jsonb,
     error_code text CHECK (
         error_code IS NULL OR char_length(error_code) BETWEEN 1 AND 120
@@ -52,7 +52,7 @@ CREATE TABLE canonical_cloud__quote.canonical_quote_event (
     sequence_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     quote_id uuid NOT NULL,
     owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
-    status text NOT NULL CHECK (status IN ('queued', 'analyzing', 'completed', 'failed')),
+    status text NOT NULL CHECK (status IN ('queued', 'analyzing', 'ready', 'failed')),
     details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT canonical_quote_event_details_json_object_check

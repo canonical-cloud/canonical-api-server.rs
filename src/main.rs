@@ -25,11 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gemini_configured = config.gemini_api_key.is_some();
 
     let listener = TcpListener::bind(&config.bind_address).await?;
-    let mut state = AppState::new(
+    let mut state = AppState::try_new(
         config.internal_auth_token,
         config.gemini_model.clone(),
         database,
-    );
+        config.shared_auth_verify_url,
+    )?;
     if let Some(api_key) = config.gemini_api_key {
         state = state.with_gemini(GeminiClient::new(api_key, config.gemini_model.clone())?);
     }

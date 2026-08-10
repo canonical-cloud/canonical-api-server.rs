@@ -32,7 +32,7 @@
     "tool": "declarative-migrations/declarative-postgres-migrate.rs",
     "revision": "d05a7880987ddaa271fa88b52c787390ef12b899",
     "source": "db/schema.sql",
-    "sourceSha256": "712f1269da3c8dfd381af9c69a81e549a4eb52be3e4f49558ec1a5edf205e191",
+    "sourceSha256": "67eb8974a1a3ed7bdf06aef04d9f39aefedd8f712a0533ccfdc60edf81455aec",
     "bootstrap": "db/bootstrap.sql",
     "grants": "db/grants.sql"
   },

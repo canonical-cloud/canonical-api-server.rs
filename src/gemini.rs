@@ -256,7 +256,7 @@ fn build_prompt(
     let context_json = serde_json::to_string_pretty(&context.context_json)
         .map_err(|_| GeminiError::InvalidAnalysis)?;
     let request_json =
-        serde_json::to_string_pretty(request).map_err(|_| GeminiError::InvalidAnalysis)?;
+        serde_json::to_string_pretty(&request.wire).map_err(|_| GeminiError::InvalidAnalysis)?;
 
     let prompt = format!(
         r#"Create a compliance services quote analysis from the following untrusted data.
@@ -483,8 +483,29 @@ mod tests {
     #[test]
     fn prompt_combines_application_and_postgres_context_without_losing_boundaries() {
         let request = CreateQuoteRequest {
+            wire: canonical_interfaces::QuoteRequest {
+                organization_name: "Example Incorporated".into(),
+                contact_name: "Casey Example".into(),
+                contact_email: "casey@example.com".into(),
+                website: None,
+                employee_count: 42,
+                annual_revenue_band: None,
+                frameworks: vec!["soc2_type_2".into(), "hipaa".into()],
+                current_stage: "readiness".into(),
+                infrastructure: vec!["aws".into()],
+                data_sensitivity: vec!["confidential".into()],
+                target_date: Some("2027-01-15".into()),
+                has_security_program: true,
+                has_policies: true,
+                has_risk_assessment: false,
+                has_incident_response_plan: true,
+                has_vendor_management: false,
+                notes: Some("Initial estimate".into()),
+                context_key: Some("quote-analysis".into()),
+                answers_version: 1,
+            },
             legacy_context_record_id: None,
-            frameworks: vec!["soc2".into(), "hipaa".into()],
+            frameworks: vec!["soc2_type_2".into(), "hipaa".into()],
             markdown_context: "# Product\nHosted service".into(),
             notes: Some("Initial estimate".into()),
             organization: OrganizationInput {
