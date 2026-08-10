@@ -1,45 +1,10 @@
-mod auth;
-mod config;
-// `quote` imports `SinkExt` for compatibility with alternate WebSocket sink implementations;
-// Axum 0.8 exposes an inherent `send` method, so the pinned toolchain sees it as unused.
-#[allow(unused_imports)]
-mod quote;
+#![forbid(unsafe_code)]
 
-use std::{sync::Arc, time::Duration};
-
-use anyhow::Context;
-use axum::{
-    extract::{DefaultBodyLimit, State},
-    http::{header, HeaderName, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    routing::get,
-    Json, Router,
-};
-use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, DbErr,
-    Statement,
-};
-use serde_json::json;
-use thiserror::Error;
-use tokio::sync::{broadcast, Semaphore};
-use tower_http::{
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    sensitive_headers::SetSensitiveRequestHeadersLayer,
-    set_header::SetResponseHeaderLayer,
-    trace::TraceLayer,
-};
-
-pub use config::Config;
-pub(crate) use quote::QuoteEvent;
-
-pub const SERVICE_NAME: &str = "canonical-api-server";
-
-mod auth;
+mod contract;
 mod gemini;
 mod persistence;
-mod wire;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,15 +12,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use canonical_lib::interfaces::{
+    QuoteDetail, QuoteListQuery, QuoteListResponse, QuoteProblem, QuoteRetryResponse,
+    QuoteSubmissionResponse,
+};
 use futures_util::StreamExt;
 use sea_orm::DatabaseConnection;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
+use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, RwLock};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
@@ -64,25 +34,20 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, warn};
 use uuid::Uuid;
 
+pub(crate) use contract::AcceptedQuoteRequest;
+use contract::{
+    now_rfc3339, parse_quote_request, quote_detail, quote_list_response, quote_retry_response,
+    quote_status_event, quote_submission_response,
+};
 pub use gemini::{GeminiBuildError, GeminiClient};
 
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-flash";
+const INTERNAL_TOKEN_HEADER: &str = "x-canonical-internal-token";
+const SUBJECT_HEADER: &str = "x-canonical-subject";
+const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
-const MAX_NOTES_BYTES: usize = 32_768;
 const MAX_CONTEXT_RECORD_BYTES: usize = 262_144;
 const APPLICATION_CONTEXT_MARKDOWN: &str = include_str!("../context/quote-analysis.md");
-const ALLOWED_FRAMEWORKS: &[&str] = &[
-    "custom",
-    "fedramp",
-    "gdpr",
-    "hipaa",
-    "iso_27001",
-    "nist_800_53",
-    "nist_csf_2",
-    "pci_dss_4",
-    "soc2_type_1",
-    "soc2_type_2",
-];
 
 #[derive(Clone)]
 pub struct Config {
@@ -91,42 +56,14 @@ pub struct Config {
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
     pub internal_auth_token: String,
-    pub shared_auth_verify_url: Option<String>,
 }
 
 impl Config {
-    fn from_env() -> Result<Self, ApiError> {
-        let bind_addr = env_or("BIND_ADDR", "0.0.0.0:8081")
-            .parse()
-            .map_err(|_| ApiError::Config("BIND_ADDR"))?;
-        let database_url = required_env("DATABASE_URL")?;
-        let database_max_connections = env_or("DATABASE_MAX_CONNECTIONS", "10")
-            .parse()
-            .map_err(|_| ApiError::Config("DATABASE_MAX_CONNECTIONS"))?;
-        if !(1..=50).contains(&database_max_connections) {
-            return Err(ApiError::Config("DATABASE_MAX_CONNECTIONS"));
-        }
-        let gemini_api_key = required_env("GEMINI_API_KEY")?;
-        let gemini_model = env_or("GEMINI_MODEL", "gemini-3.1-pro-preview");
-        if !gemini_model
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        {
-            return Err(ApiError::Config("GEMINI_MODEL"));
-        }
-        let quote_context_path = PathBuf::from(env_or(
-            "QUOTE_CONTEXT_MARKDOWN_PATH",
-            "context/quote-analysis.md",
-        ));
-        let origin_assertion_secret = required_env("ORIGIN_ASSERTION_SECRET")?.into_bytes();
-        if origin_assertion_secret.len() < 32 {
-            return Err(ApiError::Config("ORIGIN_ASSERTION_SECRET"));
-        }
-        let assertion_max_age_seconds = env_or("ORIGIN_ASSERTION_MAX_AGE_SECONDS", "30")
-            .parse()
-            .map_err(|_| ApiError::Config("ORIGIN_ASSERTION_MAX_AGE_SECONDS"))?;
-        if !(5..=60).contains(&assertion_max_age_seconds) {
-            return Err(ApiError::Config("ORIGIN_ASSERTION_MAX_AGE_SECONDS"));
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let internal_auth_token = env::var("CANONICAL_INTERNAL_AUTH_TOKEN")
+            .map_err(|_| ConfigError::MissingInternalAuthToken)?;
+        if internal_auth_token.trim().len() < 32 {
+            return Err(ConfigError::WeakInternalAuthToken);
         }
 
         let gemini_api_key = env::var("GEMINI_API_KEY").ok();
@@ -148,7 +85,6 @@ impl Config {
             gemini_api_key,
             gemini_model,
             internal_auth_token,
-            shared_auth_verify_url: env::var("SHARED_AUTH_VERIFY_URL").ok(),
         })
     }
 }
@@ -168,7 +104,6 @@ impl fmt::Debug for Config {
             )
             .field("gemini_model", &self.gemini_model)
             .field("internal_auth_token", &"[redacted]")
-            .field("shared_auth_verify_url", &self.shared_auth_verify_url)
             .finish()
     }
 }
@@ -176,7 +111,6 @@ impl fmt::Debug for Config {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfigError {
     InvalidGeminiModel,
-    InvalidSharedAuthVerifyUrl,
     MissingInternalAuthToken,
     WeakGeminiApiKey,
     WeakInternalAuthToken,
@@ -188,9 +122,6 @@ impl fmt::Display for ConfigError {
             Self::InvalidGeminiModel => formatter.write_str(
                 "GEMINI_MODEL must contain only ASCII letters, digits, '.', '-', or '_'",
             ),
-            Self::InvalidSharedAuthVerifyUrl => formatter.write_str(
-                "SHARED_AUTH_VERIFY_URL must be the exact HTTPS /shared-auth/auth/verify endpoint, except on loopback or Kubernetes service DNS",
-            ),
             Self::MissingInternalAuthToken => {
                 formatter.write_str("CANONICAL_INTERNAL_AUTH_TOKEN is required")
             }
@@ -201,36 +132,10 @@ impl fmt::Display for ConfigError {
                 "CANONICAL_INTERNAL_AUTH_TOKEN must contain at least 32 non-whitespace bytes",
             ),
         }
-        validate_list(&mut self.data_types, 12, 80)?;
-        validate_list(&mut self.cloud_providers, 12, 80)?;
-        Ok(())
     }
 }
 
-fn bounded_text(value: &str, minimum: usize, maximum: usize) -> Result<String, ApiError> {
-    let output = value.trim().to_owned();
-    let count = output.chars().count();
-    if count < minimum || count > maximum || output.contains('\0') {
-        return Err(ApiError::Validation("text field"));
-    }
-    Ok(output)
-}
-
-fn validate_list(
-    values: &mut Vec<String>,
-    maximum_items: usize,
-    maximum_chars: usize,
-) -> Result<(), ApiError> {
-    if values.len() > maximum_items {
-        return Err(ApiError::Validation("list field"));
-    }
-    for value in values.iter_mut() {
-        *value = bounded_text(value, 1, maximum_chars)?;
-    }
-    values.sort();
-    values.dedup();
-    Ok(())
-}
+impl std::error::Error for ConfigError {}
 
 fn is_valid_model_name(value: &str) -> bool {
     let trimmed = value.trim();
@@ -244,11 +149,12 @@ fn is_valid_model_name(value: &str) -> bool {
 #[derive(Clone)]
 pub struct AppState {
     database: Option<DatabaseConnection>,
-    events: broadcast::Sender<QuoteEvent>,
+    events: broadcast::Sender<QuoteEventRecord>,
     gemini: Option<GeminiClient>,
     gemini_model: Arc<str>,
-    auth: auth::Authenticator,
-    event_sequence: Arc<AtomicU64>,
+    idempotency: Arc<RwLock<HashMap<(String, String), MemoryOperation>>>,
+    internal_auth_token: Arc<str>,
+    next_event_sequence: Arc<AtomicU64>,
     quotes: Arc<RwLock<HashMap<Uuid, QuoteRecord>>>,
 }
 
@@ -259,26 +165,17 @@ impl AppState {
         gemini_model: impl Into<Arc<str>>,
         database: Option<DatabaseConnection>,
     ) -> Self {
-        Self::try_new(internal_auth_token, gemini_model, database, None)
-            .expect("static test authentication configuration")
-    }
-
-    pub fn try_new(
-        internal_auth_token: impl Into<Arc<str>>,
-        gemini_model: impl Into<Arc<str>>,
-        database: Option<DatabaseConnection>,
-        shared_auth_verify_url: Option<String>,
-    ) -> Result<Self, ConfigError> {
         let (events, _) = broadcast::channel(256);
-        Ok(Self {
+        Self {
             database,
             events,
             gemini: None,
             gemini_model: gemini_model.into(),
-            auth: auth::Authenticator::new(internal_auth_token, shared_auth_verify_url)?,
-            event_sequence: Arc::new(AtomicU64::new(0)),
+            idempotency: Arc::new(RwLock::new(HashMap::new())),
+            internal_auth_token: internal_auth_token.into(),
+            next_event_sequence: Arc::new(AtomicU64::new(1)),
             quotes: Arc::new(RwLock::new(HashMap::new())),
-        })
+        }
     }
 
     #[must_use]
@@ -288,21 +185,33 @@ impl AppState {
     }
 }
 
+#[derive(Clone, Debug)]
+enum MemoryOperation {
+    Create {
+        quote_id: Uuid,
+        request_json: JsonValue,
+    },
+    Retry {
+        quote_id: Uuid,
+    },
+}
+
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     Router::new()
         .route("/healthz", get(health))
         .route("/api/v1/quotes", get(list_quotes).post(create_quote))
         .route("/api/v1/quotes/{quote_id}", get(get_quote))
-        .route(
-            "/api/v1/quotes/{quote_id}/retry",
-            axum::routing::post(retry_quote),
-        )
+        .route("/api/v1/quotes/{quote_id}/retry", post(retry_quote))
         .route("/api/v1/quotes/{quote_id}/events", get(quote_events))
+        .route("/v1/quotes", get(list_quotes).post(create_quote))
+        .route("/v1/quotes/{quote_id}", get(get_quote))
+        .route("/v1/quotes/{quote_id}/retry", post(retry_quote))
+        .route("/v1/quotes/{quote_id}/events", get(quote_events))
         .with_state(state)
         .layer(SetSensitiveRequestHeadersLayer::new([
             axum::http::header::AUTHORIZATION,
-            HeaderName::from_static("x-canonical-internal-token"),
+            HeaderName::from_static(INTERNAL_TOKEN_HEADER),
         ]))
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
@@ -311,14 +220,6 @@ pub fn build_router(state: AppState) -> Router {
             Duration::from_secs(90),
         ))
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
-    tracing::info!(address = %config.bind_addr, "canonical API listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    Ok(())
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -335,107 +236,223 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 async fn create_quote(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<canonical_interfaces::QuoteRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let subject = state.auth.authenticate(&headers).await?;
-    let request = wire::normalize_request(request)?;
+    Json(payload): Json<JsonValue>,
+) -> Result<(StatusCode, Json<QuoteSubmissionResponse>), ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let idempotency_key = required_idempotency_key(&headers)?;
+    let request = parse_quote_request(payload)?;
+    let request_json = serde_json::to_value(&request.wire).map_err(|_| {
+        ApiError::bad_request("invalid_request", "quote request could not be normalized")
+    })?;
 
-    let quote_id = Uuid::new_v4();
-    let mut record = QuoteRecord {
+    let (record, context, event, should_analyze) = if let Some(database) = state.database.as_ref() {
+        let timestamp = now_rfc3339()?;
+        let record = new_record(&state, &subject, request.wire.clone(), timestamp);
+        match persistence::create_quote(database, &subject, &idempotency_key, &request, record)
+            .await
+            .map_err(map_store_error)?
+        {
+            persistence::CreateQuoteOutcome::Created {
+                context,
+                event,
+                record,
+            } => (record, Some(context), Some(event), true),
+            persistence::CreateQuoteOutcome::Existing { record } => (record, None, None, false),
+        }
+    } else {
+        let key = (subject.clone(), idempotency_key.clone());
+        if let Some(operation) = state.idempotency.read().await.get(&key).cloned() {
+            match operation {
+                MemoryOperation::Create {
+                    quote_id,
+                    request_json: existing,
+                } if existing == request_json => {
+                    let record = state
+                        .quotes
+                        .read()
+                        .await
+                        .get(&quote_id)
+                        .cloned()
+                        .ok_or_else(storage_unavailable)?;
+                    (record, None, None, false)
+                }
+                _ => return Err(idempotency_reused()),
+            }
+        } else {
+            let timestamp = now_rfc3339()?;
+            let record = new_record(&state, &subject, request.wire.clone(), timestamp);
+            let event = memory_event(&state, &record)?;
+            state.idempotency.write().await.insert(
+                key,
+                MemoryOperation::Create {
+                    quote_id: record.quote_id,
+                    request_json,
+                },
+            );
+            (
+                record,
+                Some(CanonicalContext::request_only()),
+                Some(event),
+                true,
+            )
+        }
+    };
+
+    state
+        .quotes
+        .write()
+        .await
+        .insert(record.quote_id, record.clone());
+    if let Some(event) = event {
+        publish_event(&state, event);
+    }
+    if should_analyze {
+        let worker_state = state.clone();
+        let worker_record = record.clone();
+        let context = context.ok_or_else(storage_unavailable)?;
+        tokio::spawn(async move {
+            run_quote_analysis(worker_state, worker_record, request, context).await;
+        });
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(quote_submission_response(&record)),
+    ))
+}
+
+async fn retry_quote(
+    State(state): State<AppState>,
+    Path(quote_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<QuoteRetryResponse>), ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let idempotency_key = required_idempotency_key(&headers)?;
+
+    let (record, context, event, should_analyze) = if let Some(database) = state.database.as_ref() {
+        match persistence::retry_quote(database, &subject, quote_id, &idempotency_key)
+            .await
+            .map_err(map_store_error)?
+        {
+            persistence::RetryQuoteOutcome::Retried {
+                context,
+                event,
+                record,
+            } => (record, Some(context), Some(event), true),
+            persistence::RetryQuoteOutcome::Existing { record } => (record, None, None, false),
+        }
+    } else {
+        let key = (subject.clone(), idempotency_key.clone());
+        if let Some(operation) = state.idempotency.read().await.get(&key).cloned() {
+            match operation {
+                MemoryOperation::Retry { quote_id: existing } if existing == quote_id => {
+                    let record = find_quote(&state, quote_id, &subject).await?;
+                    (record, None, None, false)
+                }
+                _ => return Err(idempotency_reused()),
+            }
+        } else {
+            let mut record = find_quote(&state, quote_id, &subject).await?;
+            if record.status != "failed" {
+                return Err(ApiError::conflict(
+                    "conflict",
+                    "only a failed quote may be retried",
+                ));
+            }
+            record.status = "queued".into();
+            record.analysis = None;
+            record.error_code = None;
+            record.updated_at = now_rfc3339()?;
+            let event = memory_event(&state, &record)?;
+            state
+                .idempotency
+                .write()
+                .await
+                .insert(key, MemoryOperation::Retry { quote_id });
+            (
+                record,
+                Some(CanonicalContext::request_only()),
+                Some(event),
+                true,
+            )
+        }
+    };
+
+    state
+        .quotes
+        .write()
+        .await
+        .insert(record.quote_id, record.clone());
+    if let Some(event) = event {
+        publish_event(&state, event);
+    }
+    if should_analyze {
+        let application_markdown = APPLICATION_CONTEXT_MARKDOWN.trim();
+        if application_markdown.is_empty()
+            || application_markdown.len() > MAX_MARKDOWN_CONTEXT_BYTES
+        {
+            return Err(ApiError::service_unavailable(
+                "context_unavailable",
+                "quote analysis context is unavailable",
+            ));
+        }
+        let request = AcceptedQuoteRequest {
+            application_markdown: application_markdown.to_owned(),
+            wire: record.request.clone(),
+        };
+        let worker_state = state.clone();
+        let worker_record = record.clone();
+        let context = context.ok_or_else(storage_unavailable)?;
+        tokio::spawn(async move {
+            run_quote_analysis(worker_state, worker_record, request, context).await;
+        });
+    }
+
+    Ok((StatusCode::ACCEPTED, Json(quote_retry_response(&record))))
+}
+
+fn new_record(
+    state: &AppState,
+    subject: &str,
+    request: canonical_lib::interfaces::QuoteRequest,
+    timestamp: String,
+) -> QuoteRecord {
+    QuoteRecord {
         analysis: None,
         context_record_id: Uuid::nil(),
         error_code: None,
-        frameworks: request.frameworks.clone(),
         gemini_model: state.gemini_model.to_string(),
-        organization_name: request.organization.legal_name.clone(),
-        owner_subject: subject.clone(),
+        owner_subject: subject.to_owned(),
         persistence: if state.database.is_some() {
             "postgres".into()
         } else {
             "memory-only".into()
         },
-        quote_id,
+        quote_id: Uuid::new_v4(),
+        request,
         status: "queued".into(),
-        request: request.wire.clone(),
-        created_at: wire::now(),
-        updated_at: wire::now(),
-    };
-
-    let context = match state.database.as_ref() {
-        Some(database) => {
-            let context = persistence::create_quote(database, &subject, &request, &record)
-                .await
-                .map_err(map_store_error)?;
-            record.context_record_id = context.id;
-            context
-        }
-        None => {
-            let context = CanonicalContext::request_only();
-            record.context_record_id = context.id;
-            context
-        }
-    };
-    let analysis_json = serde_json::to_value(&analysis).map_err(|_| ApiError::Internal)?;
-    let updated_at = Utc::now();
-    state
-        .db
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            r#"UPDATE quote_request
-               SET status = 'complete', analysis = $2, model = $3, updated_at = $4
-               WHERE id = $1 AND owner_id = $5"#,
-            [
-                quote_id.into(),
-                analysis_json.clone().into(),
-                state.config.gemini_model.clone().into(),
-                updated_at.into(),
-                user.user_id.into(),
-            ],
-        ))
-        .await?;
-    emit(&state, user.user_id, quote_id, "complete");
-    Ok((
-        StatusCode::CREATED,
-        Json(QuoteRecord {
-            id: quote_id,
-            owner_id: user.user_id,
-            status: "complete".to_owned(),
-            intake: intake_json,
-            analysis: Some(analysis_json),
-            model: Some(state.config.gemini_model.clone()),
-            created_at: now,
-            updated_at,
-        }),
-    ))
-}
-
-    state.quotes.write().await.insert(quote_id, record.clone());
-    publish_event(&state, &record);
-
-    let worker_state = state.clone();
-    let worker_record = record.clone();
-    tokio::spawn(async move {
-        run_quote_analysis(worker_state, worker_record, request, context).await;
-    });
-
-    Ok((StatusCode::ACCEPTED, Json(wire::submission(&record))))
+        created_at: timestamp.clone(),
+        updated_at: timestamp,
+    }
 }
 
 async fn run_quote_analysis(
     state: AppState,
     mut record: QuoteRecord,
-    request: CreateQuoteRequest,
+    request: AcceptedQuoteRequest,
     context: CanonicalContext,
 ) {
     record.status = "analyzing".into();
     record.error_code = None;
     record.analysis = None;
-    update_quote_state(&state, &record).await;
+    if !update_quote_state(&state, &mut record).await {
+        return;
+    }
 
     let Some(gemini) = state.gemini.as_ref() else {
         record.status = "failed".into();
         record.error_code = Some("gemini_not_configured".into());
-        update_quote_state(&state, &record).await;
+        let _ = update_quote_state(&state, &mut record).await;
         return;
     };
 
@@ -456,7 +473,7 @@ async fn run_quote_analysis(
 
     match gemini.analyze(&request, &context).await {
         Ok(analysis) => {
-            record.status = "ready".into();
+            record.status = "completed".into();
             record.analysis = Some(analysis);
             record.error_code = None;
         }
@@ -472,7 +489,7 @@ async fn run_quote_analysis(
         }
     }
 
-    update_quote_state(&state, &record).await;
+    let _ = update_quote_state(&state, &mut record).await;
 
     if let (Some(database), Some(attempt_id)) = (state.database.as_ref(), attempt_id) {
         if let Err(error) = persistence::finish_model_attempt(database, &record, attempt_id).await {
@@ -485,102 +502,105 @@ async fn run_quote_analysis(
     }
 }
 
-async fn update_quote_state(state: &AppState, record: &QuoteRecord) {
-    let mut record = record.clone();
-    record.updated_at = wire::now();
+async fn update_quote_state(state: &AppState, record: &mut QuoteRecord) -> bool {
+    let event = if let Some(database) = state.database.as_ref() {
+        match persistence::update_quote(database, record).await {
+            Ok(event) => event,
+            Err(error) => {
+                error!(
+                    quote_id = %record.quote_id,
+                    error = %error,
+                    "failed to persist quote status"
+                );
+                return false;
+            }
+        }
+    } else {
+        match now_rfc3339() {
+            Ok(timestamp) => record.updated_at = timestamp,
+            Err(error) => {
+                error!(quote_id = %record.quote_id, %error, "failed to generate quote timestamp");
+                return false;
+            }
+        }
+        match memory_event(state, record) {
+            Ok(event) => event,
+            Err(error) => {
+                error!(quote_id = %record.quote_id, %error, "failed to create quote event");
+                return false;
+            }
+        }
+    };
+
     state
         .quotes
         .write()
         .await
         .insert(record.quote_id, record.clone());
-
-    if let Some(database) = state.database.as_ref() {
-        if let Err(error) = persistence::update_quote(database, &record).await {
-            error!(
-                quote_id = %record.quote_id,
-                error = %error,
-                "failed to persist quote status"
-            );
-        }
-    }
-
-    publish_event(state, &record);
+    publish_event(state, event);
+    true
 }
 
-fn publish_event(state: &AppState, record: &QuoteRecord) {
-    let sequence = state.event_sequence.fetch_add(1, Ordering::Relaxed) + 1;
-    let _ = state.events.send(QuoteEvent {
-        owner_subject: record.owner_subject.clone(),
-        quote_id: record.quote_id,
-        status: record.status.clone(),
-        sequence,
-        occurred_at: record.updated_at,
-        estimate: wire::detail(record).estimate,
-        problem: wire::detail(record).problem,
-    });
+fn publish_event(state: &AppState, event: QuoteEventRecord) {
+    let _ = state.events.send(event);
 }
 
 async fn list_quotes(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<canonical_interfaces::QuoteListResponse>, ApiError> {
-    let subject = state.auth.authenticate(&headers).await?;
+    Query(query): Query<QuoteListQuery>,
+) -> Result<Json<QuoteListResponse>, ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let limit = usize::try_from(query.limit.unwrap_or(25).clamp(1, 100)).unwrap_or(25);
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("invalid_request", "cursor is invalid"))?;
+
     let records = match state.database.as_ref() {
-        Some(database) => persistence::list_quotes(database, &subject, 50)
+        Some(database) => persistence::list_quotes(database, &subject, (limit + 1) as u64, cursor)
             .await
             .map_err(map_store_error)?,
-        None => state
-            .quotes
-            .read()
-            .await
-            .values()
-            .filter(|record| record.owner_subject == subject)
-            .take(50)
-            .cloned()
-            .collect(),
+        None => {
+            let mut records = state
+                .quotes
+                .read()
+                .await
+                .values()
+                .filter(|record| record.owner_subject == subject)
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by(|left, right| {
+                right
+                    .created_at
+                    .cmp(&left.created_at)
+                    .then_with(|| right.quote_id.cmp(&left.quote_id))
+            });
+            if let Some(cursor) = cursor {
+                if let Some(position) = records.iter().position(|record| record.quote_id == cursor)
+                {
+                    records = records.into_iter().skip(position + 1).collect();
+                } else {
+                    records.clear();
+                }
+            }
+            records.truncate(limit + 1);
+            records
+        }
     };
-    Ok(Json(wire::list(records)))
+    Ok(Json(quote_list_response(records, limit)?))
 }
 
 async fn get_quote(
     State(state): State<AppState>,
     Path(quote_id): Path<Uuid>,
     headers: HeaderMap,
-) -> Result<Json<canonical_interfaces::QuoteDetail>, ApiError> {
-    let subject = state.auth.authenticate(&headers).await?;
+) -> Result<Json<QuoteDetail>, ApiError> {
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
     let record = find_quote(&state, quote_id, &subject).await?;
-    Ok(Json(wire::detail(&record)))
-}
-
-async fn retry_quote(
-    State(state): State<AppState>,
-    Path(quote_id): Path<Uuid>,
-    headers: HeaderMap,
-) -> Result<(StatusCode, Json<canonical_interfaces::QuoteRetryResponse>), ApiError> {
-    let subject = state.auth.authenticate(&headers).await?;
-    let mut record = find_quote(&state, quote_id, &subject).await?;
-    if record.status != "failed" {
-        return Err(ApiError::conflict(
-            "quote_not_retryable",
-            "only failed quotes may be retried",
-        ));
-    }
-    record.status = "queued".into();
-    record.analysis = None;
-    record.error_code = None;
-    record.updated_at = wire::now();
-    update_quote_state(&state, &record).await;
-
-    let request = wire::normalize_request(record.request.clone())?;
-    let context = match state.database.as_ref() {
-        Some(database) => persistence::get_context(database, &subject, record.context_record_id)
-            .await
-            .map_err(map_store_error)?,
-        None => CanonicalContext::request_only(),
-    };
-    let response = wire::retry(&record);
-    tokio::spawn(run_quote_analysis(state, record, request, context));
-    Ok((StatusCode::ACCEPTED, Json(response)))
+    Ok(Json(quote_detail(&record)?))
 }
 
 async fn find_quote(
@@ -588,28 +608,20 @@ async fn find_quote(
     quote_id: Uuid,
     subject: &str,
 ) -> Result<QuoteRecord, ApiError> {
+    if let Some(database) = state.database.as_ref() {
+        let record = persistence::get_quote(database, subject, quote_id)
+            .await
+            .map_err(map_store_error)?;
+        state.quotes.write().await.insert(quote_id, record.clone());
+        return Ok(record);
+    }
+
     if let Some(record) = state.quotes.read().await.get(&quote_id).cloned() {
         if record.owner_subject == subject {
             return Ok(record);
         }
-        return Err(ApiError::not_found(
-            "quote_not_found",
-            "quote was not found",
-        ));
     }
-
-    let Some(database) = state.database.as_ref() else {
-        return Err(ApiError::not_found(
-            "quote_not_found",
-            "quote was not found",
-        ));
-    };
-
-    let record = persistence::get_quote(database, subject, quote_id)
-        .await
-        .map_err(map_store_error)?;
-    state.quotes.write().await.insert(quote_id, record.clone());
-    Ok(record)
+    Err(ApiError::not_found("not_found", "quote was not found"))
 }
 
 async fn quote_events(
@@ -618,25 +630,39 @@ async fn quote_events(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let subject = state.auth.authenticate(&headers).await?;
-    find_quote(&state, quote_id, &subject).await?;
+    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let record = find_quote(&state, quote_id, &subject).await?;
+    let initial = if let Some(database) = state.database.as_ref() {
+        persistence::latest_event(database, &subject, quote_id)
+            .await
+            .map_err(map_store_error)?
+    } else {
+        QuoteEventRecord {
+            owner_subject: subject.clone(),
+            quote_id,
+            sequence: 0,
+            status: record.status.clone(),
+            occurred_at: record.updated_at.clone(),
+        }
+    };
 
-async fn quote_websocket(
-    State(state): State<AppState>,
-    user: EdgeUser,
-    upgrade: WebSocketUpgrade,
-) -> Response {
-    upgrade.on_upgrade(move |socket| websocket_loop(socket, state, user.user_id))
+    Ok(upgrade
+        .on_upgrade(move |socket| stream_quote_events(socket, state, quote_id, subject, initial)))
 }
 
-async fn websocket_loop(socket: WebSocket, state: AppState, owner_id: Uuid) {
+async fn stream_quote_events(
+    mut socket: WebSocket,
+    state: AppState,
+    quote_id: Uuid,
+    owner_subject: String,
+    initial: QuoteEventRecord,
+) {
     let mut events = state.events.subscribe();
     if let Ok(record) = find_quote(&state, quote_id, &owner_subject).await {
-        if send_json(&mut socket, &wire::detail(&record))
-            .await
-            .is_err()
-        {
-            return;
+        if let Ok(event) = quote_status_event(&initial, &record) {
+            if send_json(&mut socket, &event).await.is_err() {
+                return;
+            }
         }
     }
 
@@ -647,7 +673,13 @@ async fn websocket_loop(socket: WebSocket, state: AppState, owner_id: Uuid) {
                     Ok(event) if event.quote_id == quote_id
                         && event.owner_subject == owner_subject =>
                     {
-                        if send_json(&mut socket, &wire::event(&event)).await.is_err() {
+                        let Ok(record) = find_quote(&state, quote_id, &owner_subject).await else {
+                            break;
+                        };
+                        let Ok(public_event) = quote_status_event(&event, &record) else {
+                            break;
+                        };
+                        if send_json(&mut socket, &public_event).await.is_err() {
                             break;
                         }
                     }
@@ -655,144 +687,88 @@ async fn websocket_loop(socket: WebSocket, state: AppState, owner_id: Uuid) {
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-            incoming = receiver.next() => {
+            incoming = socket.next() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                    _ => {}
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
                 }
             }
         }
     }
 }
 
-async fn migrate() -> anyhow::Result<()> {
-    let database_url = std::env::var("MIGRATION_DATABASE_URL")
-        .context("MIGRATION_DATABASE_URL is required for migrate")?;
-    let db = connect_database(&database_url, 2)
+async fn send_json<T: Serialize>(socket: &mut WebSocket, value: &T) -> Result<(), ()> {
+    let payload = serde_json::to_string(value).map_err(|_| ())?;
+    socket
+        .send(Message::Text(payload.into()))
         .await
         .map_err(|_| ())
 }
 
-#[derive(Clone, Debug)]
-pub struct CreateQuoteRequest {
-    pub(crate) wire: canonical_interfaces::QuoteRequest,
-    legacy_context_record_id: Option<Uuid>,
-    pub frameworks: Vec<String>,
-    pub markdown_context: String,
-    pub notes: Option<String>,
-    pub organization: OrganizationInput,
-    pub target_date: Option<String>,
-}
-
-impl CreateQuoteRequest {
-    fn validate_and_normalize(mut self) -> Result<Self, ApiError> {
-        self.organization.validate()?;
-
-        if self.frameworks.is_empty() || self.frameworks.len() > 16 {
-            return Err(ApiError::bad_request(
-                "invalid_frameworks",
-                "between 1 and 16 frameworks are required",
-            ));
-        }
-
-        let mut seen = HashSet::new();
-        let mut normalized = Vec::with_capacity(self.frameworks.len());
-        for framework in self.frameworks {
-            let framework = framework.trim().to_ascii_lowercase();
-            if !ALLOWED_FRAMEWORKS.contains(&framework.as_str()) {
-                return Err(ApiError::bad_request(
-                    "unsupported_framework",
-                    "one or more requested frameworks are unsupported",
-                ));
-            }
-            if seen.insert(framework.clone()) {
-                normalized.push(framework);
-            }
-        }
-        self.frameworks = normalized;
-
-        let markdown = APPLICATION_CONTEXT_MARKDOWN.trim();
-        if markdown.is_empty() || markdown.len() > MAX_MARKDOWN_CONTEXT_BYTES {
-            return Err(ApiError::service_unavailable(
-                "application_context_invalid",
-                "quote analysis context is unavailable",
-            ));
-        }
-        self.markdown_context = markdown.to_owned();
-        self.legacy_context_record_id = None;
-
-        if self
-            .notes
-            .as_deref()
-            .is_some_and(|notes| notes.len() > MAX_NOTES_BYTES)
-        {
-            signal.recv().await;
-        }
-        self.notes = self
-            .notes
-            .take()
-            .map(|notes| notes.trim().to_owned())
-            .filter(|notes| !notes.is_empty());
-
-        if self
-            .target_date
-            .as_deref()
-            .is_some_and(|value| value.len() > 32 || !is_iso_date(value))
-        {
-            return Err(ApiError::bad_request(
-                "invalid_target_date",
-                "target_date must use YYYY-MM-DD",
-            ));
-        }
-
-        Ok(self)
+fn authenticate(headers: &HeaderMap, expected_token: &str) -> Result<String, ApiError> {
+    let supplied_token = headers
+        .get(INTERNAL_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let token_is_valid = supplied_token
+        .map(|token| bool::from(token.as_bytes().ct_eq(expected_token.as_bytes())))
+        .unwrap_or(false);
+    if !token_is_valid {
+        return Err(ApiError::unauthorized(
+            "unauthorized",
+            "trusted proxy authentication failed",
+        ));
     }
+
+    let subject = headers
+        .get(SUBJECT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 255
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
+        })
+        .ok_or_else(|| {
+            ApiError::unauthorized("unauthorized", "authenticated subject is required")
+        })?;
+    Ok(subject.to_owned())
 }
 
-fn is_iso_date(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 10
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+fn required_idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
+    let value = headers
+        .get(IDEMPOTENCY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            (8..=128).contains(&value.len())
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+                })
+        })
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_request",
+                "Idempotency-Key must contain 8 to 128 allowed ASCII characters",
+            )
+        })?;
+    Ok(value.to_owned())
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct OrganizationInput {
-    pub employee_count: u32,
-    pub industry: String,
-    pub legal_name: String,
-}
-
-impl OrganizationInput {
-    fn validate(&mut self) -> Result<(), ApiError> {
-        self.legal_name = self.legal_name.trim().to_owned();
-        if self.legal_name.is_empty() || self.legal_name.len() > 200 {
-            return Err(ApiError::bad_request(
-                "invalid_organization",
-                "organization.legal_name must contain 1 to 200 bytes",
-            ));
-        }
-        if self.employee_count == 0 || self.employee_count > 10_000_000 {
-            return Err(ApiError::bad_request(
-                "invalid_employee_count",
-                "organization.employee_count must be between 1 and 10000000",
-            ));
-        }
-
-        self.industry = self.industry.trim().to_owned();
-        if self.industry.is_empty() || self.industry.len() > 120 {
-            return Err(ApiError::bad_request(
-                "invalid_industry",
-                "organization.industry must contain 1 to 120 bytes",
-            ));
-        }
-        Ok(())
-    }
+fn memory_event(state: &AppState, record: &QuoteRecord) -> Result<QuoteEventRecord, ApiError> {
+    Ok(QuoteEventRecord {
+        owner_subject: record.owner_subject.clone(),
+        quote_id: record.quote_id,
+        sequence: state.next_event_sequence.fetch_add(1, Ordering::Relaxed),
+        status: record.status.clone(),
+        occurred_at: record.updated_at.clone(),
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -835,27 +811,23 @@ pub struct QuoteRecord {
     pub analysis: Option<JsonValue>,
     pub context_record_id: Uuid,
     pub error_code: Option<String>,
-    pub frameworks: Vec<String>,
     pub gemini_model: String,
-    pub organization_name: String,
     pub owner_subject: String,
     pub persistence: String,
     pub quote_id: Uuid,
+    pub request: canonical_lib::interfaces::QuoteRequest,
     pub status: String,
-    pub request: canonical_interfaces::QuoteRequest,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct QuoteEvent {
-    pub(crate) owner_subject: String,
-    pub(crate) quote_id: Uuid,
-    pub(crate) status: String,
-    pub(crate) sequence: u64,
-    pub(crate) occurred_at: chrono::DateTime<chrono::Utc>,
-    pub(crate) estimate: Option<canonical_interfaces::QuoteEstimate>,
-    pub(crate) problem: Option<canonical_interfaces::QuoteProblem>,
+#[derive(Clone, Debug)]
+pub(crate) struct QuoteEventRecord {
+    pub owner_subject: String,
+    pub quote_id: Uuid,
+    pub sequence: u64,
+    pub status: String,
+    pub occurred_at: String,
 }
 
 #[derive(Serialize)]
@@ -871,53 +843,69 @@ struct HealthResponse {
 
 fn map_store_error(error: persistence::StoreError) -> ApiError {
     match error {
-        persistence::StoreError::ContextNotFound => ApiError::not_found(
-            "context_not_found",
+        persistence::StoreError::ContextNotFound => ApiError::service_unavailable(
+            "context_unavailable",
             "an active canonical context record was not found for this account",
         ),
+        persistence::StoreError::IdempotencyKeyReused => idempotency_reused(),
+        persistence::StoreError::InvalidTransition => {
+            ApiError::conflict("conflict", "the requested quote transition is not allowed")
+        }
         persistence::StoreError::QuoteNotFound => {
-            ApiError::not_found("quote_not_found", "quote was not found")
+            ApiError::not_found("not_found", "quote was not found")
         }
         persistence::StoreError::Database(_) | persistence::StoreError::InvalidRecord(_) => {
             error!(
                 error_code = error.code(),
                 "quote persistence operation failed"
             );
-            ApiError::service_unavailable(
-                "storage_unavailable",
-                "quote storage is temporarily unavailable",
-            )
+            storage_unavailable()
         }
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorBody {
-    code: &'static str,
-    message: &'static str,
-    request_id: String,
+fn idempotency_reused() -> ApiError {
+    ApiError::conflict(
+        "idempotency_key_reused",
+        "Idempotency-Key was already used for another operation or payload",
+    )
 }
 
-fn required_env(name: &'static str) -> Result<String, ApiError> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or(ApiError::Config(name))
+fn storage_unavailable() -> ApiError {
+    ApiError::service_unavailable(
+        "storage_unavailable",
+        "quote storage is temporarily unavailable",
+    )
+}
+
+#[derive(Debug)]
+struct ApiError {
+    body: QuoteProblem,
+    status: StatusCode,
 }
 
 impl ApiError {
+    fn new(status: StatusCode, code: &'static str, message: &'static str) -> Self {
+        Self {
+            body: QuoteProblem {
+                code: code.into(),
+                message: message.into(),
+                request_id: Uuid::new_v4().to_string(),
+            },
+            status,
+        }
+    }
+
     fn bad_request(code: &'static str, message: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, message)
     }
 
-    fn not_found(code: &'static str, message: &'static str) -> Self {
-        Self::new(StatusCode::NOT_FOUND, code, message)
-    }
-
     fn conflict(code: &'static str, message: &'static str) -> Self {
         Self::new(StatusCode::CONFLICT, code, message)
+    }
+
+    fn not_found(code: &'static str, message: &'static str) -> Self {
+        Self::new(StatusCode::NOT_FOUND, code, message)
     }
 
     fn service_unavailable(code: &'static str, message: &'static str) -> Self {
@@ -927,30 +915,23 @@ impl ApiError {
     fn unauthorized(code: &'static str, message: &'static str) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, code, message)
     }
+}
 
-    fn new(status: StatusCode, code: &'static str, message: &'static str) -> Self {
-        Self {
-            body: ErrorBody {
-                code,
-                message,
-                request_id: Uuid::new_v4().to_string(),
-            },
-            status,
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
+impl fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.body.code)
     }
-    tracing::info!("shutdown signal received");
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(self.body)).into_response()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_router, AppState, DEFAULT_GEMINI_MODEL};
+    use super::{build_router, AppState, APPLICATION_CONTEXT_MARKDOWN, DEFAULT_GEMINI_MODEL};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -964,9 +945,21 @@ mod tests {
         build_router(AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None))
     }
 
+    fn request(payload: Value, key: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/quotes")
+            .header("content-type", "application/json")
+            .header("x-canonical-internal-token", TOKEN)
+            .header("x-canonical-subject", "user-123")
+            .header("idempotency-key", key)
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    }
+
     #[test]
-    fn default_model_tracks_the_current_pro_preview() {
-        assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.1-pro-preview");
+    fn default_model_tracks_gemini_3_6_flash() {
+        assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.6-flash");
     }
 
     #[tokio::test]
@@ -997,6 +990,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/quotes")
                     .header("content-type", "application/json")
+                    .header("idempotency-key", "quote:test-0001")
                     .body(Body::from(valid_payload().to_string()))
                     .unwrap(),
             )
@@ -1006,20 +1000,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authenticated_owner_can_create_and_read_a_quote() {
+    async fn authenticated_owner_can_create_read_and_list_a_quote() {
         let app = app();
         let create = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/quotes")
-                    .header("content-type", "application/json")
-                    .header("x-canonical-internal-token", TOKEN)
-                    .header("x-canonical-subject", "user-123")
-                    .body(Body::from(valid_payload().to_string()))
-                    .unwrap(),
-            )
+            .oneshot(request(valid_payload(), "quote:test-0002"))
             .await
             .unwrap();
         assert_eq!(create.status(), StatusCode::ACCEPTED);
@@ -1028,8 +1013,14 @@ mod tests {
                 .unwrap();
         let quote_id = body["quoteId"].as_str().unwrap();
         Uuid::parse_str(quote_id).unwrap();
+        assert_eq!(body["status"], "queued");
+        assert_eq!(
+            body["streamUrl"],
+            format!("/api/v1/quotes/{quote_id}/events")
+        );
 
         let read = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/v1/quotes/{quote_id}"))
@@ -1041,88 +1032,76 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.status(), StatusCode::OK);
-    }
+        let read_body: Value =
+            serde_json::from_slice(&read.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(read_body["quoteId"], quote_id);
+        assert_eq!(
+            read_body["request"]["organizationName"],
+            "Example Incorporated"
+        );
+        assert!(read_body.get("persistence").is_none());
+        assert!(read_body.get("gemini_model").is_none());
 
-    #[tokio::test]
-    async fn quote_history_is_owner_scoped() {
-        let app = app();
-        for owner in ["owner-a", "owner-b"] {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/v1/quotes")
-                        .header("content-type", "application/json")
-                        .header("x-canonical-internal-token", TOKEN)
-                        .header("x-canonical-subject", owner)
-                        .body(Body::from(valid_payload().to_string()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::ACCEPTED);
-        }
-
-        let response = app
+        let list = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/quotes")
+                    .uri("/api/v1/quotes?limit=25")
                     .header("x-canonical-internal-token", TOKEN)
-                    .header("x-canonical-subject", "owner-a")
+                    .header("x-canonical-subject", "user-123")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        let quotes = body["quotes"].as_array().unwrap();
-        assert_eq!(quotes.len(), 1);
-        assert_eq!(quotes[0]["organizationName"], "Example Incorporated");
+        assert_eq!(list.status(), StatusCode::OK);
+        let list_body: Value =
+            serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(list_body["quotes"].as_array().unwrap().len(), 1);
+        assert_eq!(list_body["quotes"][0]["quoteId"], quote_id);
     }
 
     #[tokio::test]
-    async fn unsupported_frameworks_are_rejected() {
-        let mut payload = valid_payload();
-        payload["frameworks"] = json!(["made-up-framework"]);
-        let response = app()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/quotes")
-                    .header("content-type", "application/json")
-                    .header("x-canonical-internal-token", TOKEN)
-                    .header("x-canonical-subject", "user-123")
-                    .body(Body::from(payload.to_string()))
-                    .unwrap(),
-            )
+    async fn create_idempotency_replays_and_rejects_payload_reuse() {
+        let app = app();
+        let first = app
+            .clone()
+            .oneshot(request(valid_payload(), "quote:test-0003"))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let first_body: Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+
+        let replay = app
+            .clone()
+            .oneshot(request(valid_payload(), "quote:test-0003"))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::ACCEPTED);
+        let replay_body: Value =
+            serde_json::from_slice(&replay.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(first_body["quoteId"], replay_body["quoteId"]);
+
+        let mut changed = valid_payload();
+        changed["employeeCount"] = json!(999);
+        let conflict = app
+            .oneshot(request(changed, "quote:test-0003"))
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let conflict_body: Value =
+            serde_json::from_slice(&conflict.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(conflict_body["code"], "idempotency_key_reused");
+        assert!(conflict_body["requestId"].as_str().is_some());
+    }
+
+    #[test]
+    fn application_markdown_is_server_owned() {
+        assert!(!APPLICATION_CONTEXT_MARKDOWN.trim().is_empty());
     }
 
     fn valid_payload() -> Value {
-        json!({
-            "organizationName": "Example Incorporated",
-            "contactName": "Casey Example",
-            "contactEmail": "casey@example.com",
-            "employeeCount": 42,
-            "frameworks": ["soc2_type_2", "hipaa"],
-            "currentStage": "readiness",
-            "infrastructure": ["aws", "saas_only"],
-            "dataSensitivity": ["confidential", "pii", "phi"],
-            "targetDate": "2027-01-15",
-            "hasSecurityProgram": true,
-            "hasPolicies": true,
-            "hasRiskAssessment": false,
-            "hasIncidentResponsePlan": true,
-            "hasVendorManagement": false,
-            "notes": "Initial estimate",
-            "contextKey": "quote-analysis",
-            "answersVersion": 1
-        })
+        serde_json::from_str(include_str!("../fixtures/quote-v1/create-request.json")).unwrap()
     }
 }
