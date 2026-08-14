@@ -400,7 +400,15 @@ async fn create_quote(
         }
     } else {
         let key = (subject.clone(), idempotency_key.clone());
-        if let Some(operation) = state.idempotency.read().await.get(&key).cloned() {
+        // End the read guard before the create path acquires the write guard.
+        // Keeping the temporary guard as the `if let` scrutinee can extend its
+        // lifetime through the entire expression and deadlock first-time
+        // submissions until the outer request timeout fires.
+        let existing_operation = {
+            let operations = state.idempotency.read().await;
+            operations.get(&key).cloned()
+        };
+        if let Some(operation) = existing_operation {
             match operation {
                 MemoryOperation::Create {
                     quote_id,
@@ -499,7 +507,14 @@ async fn retry_quote(
         }
     } else {
         let key = (subject.clone(), idempotency_key.clone());
-        if let Some(operation) = state.idempotency.read().await.get(&key).cloned() {
+        // As in create_quote, release the read guard before a new retry writes
+        // its operation key. This makes the lock ordering explicit and keeps
+        // the request state machine from timing out in a self-deadlock.
+        let existing_operation = {
+            let operations = state.idempotency.read().await;
+            operations.get(&key).cloned()
+        };
+        if let Some(operation) = existing_operation {
             match operation {
                 MemoryOperation::Retry { quote_id: existing } if existing == quote_id => {
                     let record = find_quote(&state, quote_id, &subject).await?;

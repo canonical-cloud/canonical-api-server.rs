@@ -345,7 +345,7 @@ dependencies = [
 [[package]]
 name = "canonical-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/canonical-cloud/canonical-interfaces?rev=4c6ca63ca24fa214a1cb1a917ac27f1d5265916a#4c6ca63ca24fa214a1cb1a917ac27f1d5265916a"
+source = "git+https://github.com/canonical-cloud/canonical-interfaces?rev=0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef#0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef"
 dependencies = [
  "serde",
  "serde_json",
@@ -354,7 +354,7 @@ dependencies = [
 [[package]]
 name = "canonical-lib"
 version = "0.1.0"
-source = "git+https://github.com/canonical-cloud/canonical-lib?rev=f0add30d4cc7e6825d24565e1db115751f833966#f0add30d4cc7e6825d24565e1db115751f833966"
+source = "git+https://github.com/canonical-cloud/canonical-lib?rev=8986ab23a18ca0ef14422f6348b264acbb9acc43#8986ab23a18ca0ef14422f6348b264acbb9acc43"
 dependencies = [
  "canonical-interfaces",
  "serde",

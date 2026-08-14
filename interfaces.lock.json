@@ -2,11 +2,11 @@
   "schema_version": 1,
   "canonical_lib": {
     "repository": "canonical-cloud/canonical-lib",
-    "commit": "f0add30d4cc7e6825d24565e1db115751f833966"
+    "commit": "8986ab23a18ca0ef14422f6348b264acbb9acc43"
   },
   "canonical_interfaces": {
     "repository": "canonical-cloud/canonical-interfaces",
-    "commit": "4c6ca63ca24fa214a1cb1a917ac27f1d5265916a",
+    "commit": "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef",
     "quote_request_fixture": {
       "path": "fixtures/quote/v1/request.json",
       "git_blob": "fe8bf1ad08a7152d44ead22ee0d082842d28b208"

@@ -47,8 +47,8 @@ def main() -> None:
     namespace = json.loads(read("db/namespace.json"))
 
     dpm_revision = "d05a7880987ddaa271fa88b52c787390ef12b899"
-    canonical_lib_revision = "f0add30d4cc7e6825d24565e1db115751f833966"
-    canonical_interfaces_revision = "4c6ca63ca24fa214a1cb1a917ac27f1d5265916a"
+    canonical_lib_revision = "8986ab23a18ca0ef14422f6348b264acbb9acc43"
+    canonical_interfaces_revision = "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef"
 
     assert namespace["namespaceId"] == "canonical_cloud__quote"
     database = namespace["database"]

@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
-canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib", rev = "f0add30d4cc7e6825d24565e1db115751f833966" }
+canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib", rev = "8986ab23a18ca0ef14422f6348b264acbb9acc43" }
 futures-util = "0.3.32"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
