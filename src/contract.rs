@@ -350,7 +350,7 @@ fn aggregate_confidence(services: &[JsonValue]) -> String {
         .iter()
         .filter_map(|service| service.get("confidence").and_then(JsonValue::as_str))
         .collect::<Vec<_>>();
-    if confidence.iter().any(|value| *value == "low") {
+    if confidence.contains(&"low") {
         "low".into()
     } else if !confidence.is_empty() && confidence.iter().all(|value| *value == "high") {
         "high".into()

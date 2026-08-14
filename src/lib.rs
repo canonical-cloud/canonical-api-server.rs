@@ -4,16 +4,17 @@ mod contract;
 mod gemini;
 mod persistence;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderName, StatusCode};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -26,7 +27,7 @@ use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use subtle::ConstantTimeEq;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, OwnedSemaphorePermit, RwLock, Semaphore};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -47,6 +48,13 @@ const SUBJECT_HEADER: &str = "x-canonical-subject";
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
 const MAX_CONTEXT_RECORD_BYTES: usize = 262_144;
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+const QUOTE_ANALYSIS_MAX_CONCURRENCY: usize = 4;
+const QUOTE_SUBMISSIONS_PER_WINDOW: usize = 5;
+const QUOTE_SUBMISSIONS_GLOBAL_PER_WINDOW: usize = 500;
+const QUOTE_SUBMISSION_WINDOW: Duration = Duration::from_secs(10 * 60);
+const QUOTE_SUBMISSION_MAX_SUBJECTS: usize = 4_096;
+const WEBSOCKET_MAX_CONNECTIONS: usize = 1_024;
 const APPLICATION_CONTEXT_MARKDOWN: &str = include_str!("../context/quote-analysis.md");
 
 #[derive(Clone)]
@@ -148,6 +156,7 @@ fn is_valid_model_name(value: &str) -> bool {
 
 #[derive(Clone)]
 pub struct AppState {
+    admission: QuoteAdmission,
     database: Option<DatabaseConnection>,
     events: broadcast::Sender<QuoteEventRecord>,
     gemini: Option<GeminiClient>,
@@ -167,6 +176,7 @@ impl AppState {
     ) -> Self {
         let (events, _) = broadcast::channel(256);
         Self {
+            admission: QuoteAdmission::default(),
             database,
             events,
             gemini: None,
@@ -183,6 +193,107 @@ impl AppState {
         self.gemini = Some(gemini);
         self
     }
+}
+
+#[derive(Clone)]
+struct QuoteAdmission {
+    analyses: Arc<Semaphore>,
+    sockets: Arc<Semaphore>,
+    submissions: Arc<Mutex<SubmissionWindows>>,
+}
+
+#[derive(Default)]
+struct SubmissionWindows {
+    all_subjects: VecDeque<Instant>,
+    by_subject: HashMap<String, VecDeque<Instant>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RateLimited {
+    retry_after_seconds: u64,
+}
+
+impl Default for QuoteAdmission {
+    fn default() -> Self {
+        Self {
+            analyses: Arc::new(Semaphore::new(QUOTE_ANALYSIS_MAX_CONCURRENCY)),
+            sockets: Arc::new(Semaphore::new(WEBSOCKET_MAX_CONNECTIONS)),
+            submissions: Arc::new(Mutex::new(SubmissionWindows::default())),
+        }
+    }
+}
+
+impl QuoteAdmission {
+    fn reserve_analysis(&self) -> Result<OwnedSemaphorePermit, ()> {
+        self.analyses.clone().try_acquire_owned().map_err(|_| ())
+    }
+
+    fn reserve_websocket(&self) -> Result<OwnedSemaphorePermit, ()> {
+        self.sockets.clone().try_acquire_owned().map_err(|_| ())
+    }
+
+    fn check_submission(&self, subject: &str) -> Result<(), RateLimited> {
+        let now = Instant::now();
+        let mut windows = self
+            .submissions
+            .lock()
+            .expect("quote admission mutex must not be poisoned");
+
+        discard_expired(&mut windows.all_subjects, now);
+        windows.by_subject.retain(|_, timestamps| {
+            discard_expired(timestamps, now);
+            !timestamps.is_empty()
+        });
+
+        if let Some(earliest) = windows.all_subjects.front() {
+            if windows.all_subjects.len() >= QUOTE_SUBMISSIONS_GLOBAL_PER_WINDOW {
+                return Err(RateLimited {
+                    retry_after_seconds: retry_after_seconds(*earliest, now),
+                });
+            }
+        }
+
+        if !windows.by_subject.contains_key(subject)
+            && windows.by_subject.len() >= QUOTE_SUBMISSION_MAX_SUBJECTS
+        {
+            let evicted_subject = windows
+                .by_subject
+                .iter()
+                .min_by_key(|(_, timestamps)| timestamps.front())
+                .map(|(subject, _)| subject.clone());
+            if let Some(evicted_subject) = evicted_subject {
+                windows.by_subject.remove(&evicted_subject);
+            }
+        }
+
+        let timestamps = windows.by_subject.entry(subject.to_owned()).or_default();
+        if let Some(earliest) = timestamps.front() {
+            if timestamps.len() >= QUOTE_SUBMISSIONS_PER_WINDOW {
+                return Err(RateLimited {
+                    retry_after_seconds: retry_after_seconds(*earliest, now),
+                });
+            }
+        }
+
+        timestamps.push_back(now);
+        windows.all_subjects.push_back(now);
+        Ok(())
+    }
+}
+
+fn discard_expired(timestamps: &mut VecDeque<Instant>, now: Instant) {
+    while timestamps.front().is_some_and(|timestamp| {
+        now.saturating_duration_since(*timestamp) >= QUOTE_SUBMISSION_WINDOW
+    }) {
+        timestamps.pop_front();
+    }
+}
+
+fn retry_after_seconds(earliest: Instant, now: Instant) -> u64 {
+    QUOTE_SUBMISSION_WINDOW
+        .saturating_sub(now.saturating_duration_since(earliest))
+        .as_secs()
+        .saturating_add(1)
 }
 
 #[derive(Clone, Debug)]
@@ -209,6 +320,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/quotes/{quote_id}/retry", post(retry_quote))
         .route("/v1/quotes/{quote_id}/events", get(quote_events))
         .with_state(state)
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(middleware::map_response(security_headers))
         .layer(SetSensitiveRequestHeadersLayer::new([
             axum::http::header::AUTHORIZATION,
             HeaderName::from_static(INTERNAL_TOKEN_HEADER),
@@ -220,6 +333,22 @@ pub fn build_router(state: AppState) -> Router {
             Duration::from_secs(90),
         ))
         .layer(TraceLayer::new_for_http())
+}
+
+async fn security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("default-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    response
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -241,6 +370,16 @@ async fn create_quote(
     let subject = authenticate(&headers, &state.internal_auth_token)?;
     let idempotency_key = required_idempotency_key(&headers)?;
     let request = parse_quote_request(payload)?;
+    let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
+        ApiError::service_unavailable(
+            "analysis_capacity_reached",
+            "quote analysis capacity is temporarily unavailable",
+        )
+    })?;
+    state
+        .admission
+        .check_submission(&subject)
+        .map_err(ApiError::rate_limited)?;
     let request_json = serde_json::to_value(&request.wire).map_err(|_| {
         ApiError::bad_request("invalid_request", "quote request could not be normalized")
     })?;
@@ -311,7 +450,14 @@ async fn create_quote(
         let worker_record = record.clone();
         let context = context.ok_or_else(storage_unavailable)?;
         tokio::spawn(async move {
-            run_quote_analysis(worker_state, worker_record, request, context).await;
+            run_quote_analysis(
+                worker_state,
+                worker_record,
+                request,
+                context,
+                analysis_permit,
+            )
+            .await;
         });
     }
 
@@ -328,6 +474,16 @@ async fn retry_quote(
 ) -> Result<(StatusCode, Json<QuoteRetryResponse>), ApiError> {
     let subject = authenticate(&headers, &state.internal_auth_token)?;
     let idempotency_key = required_idempotency_key(&headers)?;
+    let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
+        ApiError::service_unavailable(
+            "analysis_capacity_reached",
+            "quote analysis capacity is temporarily unavailable",
+        )
+    })?;
+    state
+        .admission
+        .check_submission(&subject)
+        .map_err(ApiError::rate_limited)?;
 
     let (record, context, event, should_analyze) = if let Some(database) = state.database.as_ref() {
         match persistence::retry_quote(database, &subject, quote_id, &idempotency_key)
@@ -404,7 +560,14 @@ async fn retry_quote(
         let worker_record = record.clone();
         let context = context.ok_or_else(storage_unavailable)?;
         tokio::spawn(async move {
-            run_quote_analysis(worker_state, worker_record, request, context).await;
+            run_quote_analysis(
+                worker_state,
+                worker_record,
+                request,
+                context,
+                analysis_permit,
+            )
+            .await;
         });
     }
 
@@ -441,6 +604,7 @@ async fn run_quote_analysis(
     mut record: QuoteRecord,
     request: AcceptedQuoteRequest,
     context: CanonicalContext,
+    _analysis_permit: OwnedSemaphorePermit,
 ) {
     record.status = "analyzing".into();
     record.error_code = None;
@@ -632,6 +796,12 @@ async fn quote_events(
 ) -> Result<Response, ApiError> {
     let subject = authenticate(&headers, &state.internal_auth_token)?;
     let record = find_quote(&state, quote_id, &subject).await?;
+    let socket_permit = state.admission.reserve_websocket().map_err(|_| {
+        ApiError::service_unavailable(
+            "websocket_capacity_reached",
+            "quote event capacity is temporarily unavailable",
+        )
+    })?;
     let initial = if let Some(database) = state.database.as_ref() {
         persistence::latest_event(database, &subject, quote_id)
             .await
@@ -647,7 +817,11 @@ async fn quote_events(
     };
 
     Ok(upgrade
-        .on_upgrade(move |socket| stream_quote_events(socket, state, quote_id, subject, initial)))
+        .max_frame_size(16 * 1024)
+        .max_message_size(16 * 1024)
+        .on_upgrade(move |socket| {
+            stream_quote_events(socket, state, quote_id, subject, initial, socket_permit)
+        }))
 }
 
 async fn stream_quote_events(
@@ -656,6 +830,7 @@ async fn stream_quote_events(
     quote_id: Uuid,
     owner_subject: String,
     initial: QuoteEventRecord,
+    _socket_permit: OwnedSemaphorePermit,
 ) {
     let mut events = state.events.subscribe();
     if let Ok(record) = find_quote(&state, quote_id, &owner_subject).await {
@@ -881,6 +1056,7 @@ fn storage_unavailable() -> ApiError {
 #[derive(Debug)]
 struct ApiError {
     body: QuoteProblem,
+    retry_after_seconds: Option<u64>,
     status: StatusCode,
 }
 
@@ -892,6 +1068,7 @@ impl ApiError {
                 message: message.into(),
                 request_id: Uuid::new_v4().to_string(),
             },
+            retry_after_seconds: None,
             status,
         }
     }
@@ -906,6 +1083,18 @@ impl ApiError {
 
     fn not_found(code: &'static str, message: &'static str) -> Self {
         Self::new(StatusCode::NOT_FOUND, code, message)
+    }
+
+    fn rate_limited(rate_limit: RateLimited) -> Self {
+        Self {
+            body: QuoteProblem {
+                code: "rate_limited".into(),
+                message: "quote submissions are temporarily rate limited".into(),
+                request_id: Uuid::new_v4().to_string(),
+            },
+            retry_after_seconds: Some(rate_limit.retry_after_seconds),
+            status: StatusCode::TOO_MANY_REQUESTS,
+        }
     }
 
     fn service_unavailable(code: &'static str, message: &'static str) -> Self {
@@ -925,15 +1114,21 @@ impl fmt::Display for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(self.body)).into_response()
+        let mut response = (self.status, Json(self.body)).into_response();
+        if let Some(retry_after_seconds) = self.retry_after_seconds {
+            if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                response.headers_mut().insert("retry-after", value);
+            }
+        }
+        response
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_router, parse_quote_request, AppState, APPLICATION_CONTEXT_MARKDOWN,
-        DEFAULT_GEMINI_MODEL,
+        build_router, parse_quote_request, AppState, QuoteAdmission, APPLICATION_CONTEXT_MARKDOWN,
+        DEFAULT_GEMINI_MODEL, MAX_REQUEST_BODY_BYTES, QUOTE_SUBMISSIONS_PER_WINDOW,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -977,6 +1172,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(response.headers()["x-frame-options"], "DENY");
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        );
         let body: Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
@@ -1000,6 +1202,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+
+    #[tokio::test]
+    async fn quote_payloads_have_a_strict_body_limit() {
+        let oversized = format!(r#"{{"notes":"{}"}}"#, "x".repeat(MAX_REQUEST_BODY_BYTES));
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .header("idempotency-key", "quote:oversized-payload")
+                    .body(Body::from(oversized))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+
+    #[test]
+    fn quote_admission_bounds_costly_analysis_and_subject_request_rate() {
+        let admission = QuoteAdmission::default();
+        let permits = (0..4)
+            .map(|_| admission.reserve_analysis().unwrap())
+            .collect::<Vec<_>>();
+        assert!(admission.reserve_analysis().is_err());
+        drop(permits);
+
+        for _ in 0..QUOTE_SUBMISSIONS_PER_WINDOW {
+            admission.check_submission("subject-a").unwrap();
+        }
+        let rate_limit = admission.check_submission("subject-a").unwrap_err();
+        assert!(rate_limit.retry_after_seconds > 0);
     }
 
     #[tokio::test]

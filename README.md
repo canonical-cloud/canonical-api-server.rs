@@ -40,11 +40,27 @@ normalized intake fields and the owner-scoped `canonical_context` row.
 6. REST lookup and the WebSocket stream are owner scoped. WebSocket broadcasts
    are hints; PostgreSQL remains authoritative.
 
-The default model is `gemini-3.6-pro` and remains configurable through
+The default model is `gemini-3.6-flash` and remains configurable through
 `GEMINI_MODEL`. Requests use the Google API-key header, a fixed Google API
 origin, disabled redirects, bounded responses, retries for transport/429/5xx
 failures, and a small circuit breaker. Prompts, context, model output, internal
 tokens, and API keys are never written to application logs.
+
+The API accepts at most four in-process analyses at a time, five accepted
+submissions per subject per ten-minute window, and 500 accepted submissions
+process-wide in that window. It rejects oversized request bodies, returns
+`429` with `Retry-After` when the subject/global quota is exhausted, and
+returns `503` before persistence when analysis capacity is full. Every API
+response is marked `Cache-Control: no-store` and carries anti-sniffing,
+anti-framing, no-referrer, and deny-all CSP headers. These admission controls
+are deliberately a local safety valve; Cloudflare must also enforce a
+distributed per-account/per-IP quota before traffic reaches this service.
+
+Quote execution is still an in-process task after the durable `queued` state
+is committed. Before selling production analysis or evidence workflows, move
+execution to a durable, idempotent worker/outbox that leases pending work,
+recovers abandoned `queued`/`analyzing` jobs after restart, and records retry
+attempts. A local concurrency limit is not a substitute for that recovery path.
 
 The generated analysis is a non-binding scope and price estimate. It is not a
 certification, audit opinion, legal opinion, or guarantee of attestation.

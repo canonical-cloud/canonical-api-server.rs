@@ -55,6 +55,15 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      - name: Generate a masked disposable internal credential
+        id: smoke_token
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
       - name: Build the production container image
         run: docker build --tag canonical-api-server:ci .
 
@@ -65,7 +74,7 @@ jobs:
           docker run --rm --detach \
             --name canonical-api-server-ci \
             --publish 18080:8080 \
-            --env CANONICAL_INTERNAL_AUTH_TOKEN=0123456789abcdef0123456789abcdef \
+            --env CANONICAL_INTERNAL_AUTH_TOKEN=${{ steps.smoke_token.outputs.value }} \
             canonical-api-server:ci
           trap 'docker logs canonical-api-server-ci || true; docker rm --force canonical-api-server-ci >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 30); do
