@@ -2407,7 +2407,6 @@ dependencies = [
 [[package]]
 name = "shared-auth-client"
 version = "0.1.0"
-source = "git+https://github.com/shared-auth/shared-auth-clients?rev=a63d2817c92d0b018899e252536371b07d5622ea#a63d2817c92d0b018899e252536371b07d5622ea"
 dependencies = [
  "reqwest 0.12.28",
  "serde",

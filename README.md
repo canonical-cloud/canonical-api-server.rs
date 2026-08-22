@@ -161,6 +161,15 @@ validates the distinct API audience before proxying, then the Rust service uses
 The service credential is sent only to Shared Auth; it is never forwarded to a
 product caller, placed in a request body, logged, or used as the end-user token.
 
+The official Shared Auth Rust client is consumed from the exact vendored
+snapshot at `vendor/shared-auth-clients/clients/rust`. Its provenance record
+pins private upstream commit
+`a63d2817c92d0b018899e252536371b07d5622ea` and SHA-256 digests for the client
+manifest, implementation, and repository license. This keeps CI and production
+container builds credentialless while preventing an unreviewed local fork.
+`scripts/verify-vendored-shared-auth-client.py` fails if the snapshot, path
+dependency, lockfile boundary, or file allowlist drifts.
+
 ## Public wire boundary
 
 Public JSON uses lowerCamelCase and generated types including:
