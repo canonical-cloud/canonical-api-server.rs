@@ -3,6 +3,7 @@
 mod contract;
 mod gemini;
 mod persistence;
+mod webhook;
 
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -26,6 +27,7 @@ use futures_util::StreamExt;
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
+use shared_auth_client::SharedAuthClient;
 use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, RwLock, Semaphore};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -41,6 +43,7 @@ use contract::{
     quote_status_event, quote_submission_response,
 };
 pub use gemini::{GeminiBuildError, GeminiClient};
+pub use webhook::{WebhookBuildError, WebhookDispatcher};
 
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-flash";
 const INTERNAL_TOKEN_HEADER: &str = "x-canonical-internal-token";
@@ -64,6 +67,11 @@ pub struct Config {
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
     pub internal_auth_token: String,
+    pub shared_auth_audience: String,
+    pub shared_auth_base: Option<String>,
+    pub shared_auth_introspect_secret: Option<String>,
+    pub webhook_endpoint: Option<String>,
+    pub webhook_secret: Option<String>,
 }
 
 impl Config {
@@ -87,12 +95,49 @@ impl Config {
             return Err(ConfigError::InvalidGeminiModel);
         }
 
+        let (webhook_endpoint, webhook_secret) = match (
+            env::var("CANONICAL_WEBHOOK_URL").ok(),
+            env::var("CANONICAL_WEBHOOK_SECRET").ok(),
+        ) {
+            (None, None) => (None, None),
+            (Some(endpoint), Some(secret)) => (Some(endpoint), Some(secret)),
+            _ => return Err(ConfigError::IncompleteWebhookConfiguration),
+        };
+
+        let (shared_auth_base, shared_auth_introspect_secret) = match (
+            env::var("SHARED_AUTH_BASE").ok(),
+            env::var("SHARED_AUTH_INTROSPECT_SECRET").ok(),
+        ) {
+            (None, None) => (None, None),
+            (Some(base), Some(secret))
+                if secret
+                    .bytes()
+                    .filter(|byte| !byte.is_ascii_whitespace())
+                    .count()
+                    >= 32 =>
+            {
+                (Some(base), Some(secret))
+            }
+            (Some(_), Some(_)) => return Err(ConfigError::WeakSharedAuthIntrospectSecret),
+            _ => return Err(ConfigError::IncompleteSharedAuthConfiguration),
+        };
+        let shared_auth_audience =
+            env::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "canonical-plus-api".into());
+        if !ores_lib_core::valid_correlation_id(&shared_auth_audience) {
+            return Err(ConfigError::InvalidSharedAuthAudience);
+        }
+
         Ok(Self {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").ok(),
             gemini_api_key,
             gemini_model,
             internal_auth_token,
+            shared_auth_audience,
+            shared_auth_base,
+            shared_auth_introspect_secret,
+            webhook_endpoint,
+            webhook_secret,
         })
     }
 }
@@ -112,6 +157,20 @@ impl fmt::Debug for Config {
             )
             .field("gemini_model", &self.gemini_model)
             .field("internal_auth_token", &"[redacted]")
+            .field("shared_auth_audience", &self.shared_auth_audience)
+            .field("shared_auth_configured", &self.shared_auth_base.is_some())
+            .field(
+                "shared_auth_introspect_secret",
+                &self
+                    .shared_auth_introspect_secret
+                    .as_ref()
+                    .map(|_| "[redacted]"),
+            )
+            .field("webhook_configured", &self.webhook_endpoint.is_some())
+            .field(
+                "webhook_secret",
+                &self.webhook_secret.as_ref().map(|_| "[redacted]"),
+            )
             .finish()
     }
 }
@@ -119,9 +178,13 @@ impl fmt::Debug for Config {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfigError {
     InvalidGeminiModel,
+    IncompleteWebhookConfiguration,
+    IncompleteSharedAuthConfiguration,
+    InvalidSharedAuthAudience,
     MissingInternalAuthToken,
     WeakGeminiApiKey,
     WeakInternalAuthToken,
+    WeakSharedAuthIntrospectSecret,
 }
 
 impl fmt::Display for ConfigError {
@@ -130,6 +193,15 @@ impl fmt::Display for ConfigError {
             Self::InvalidGeminiModel => formatter.write_str(
                 "GEMINI_MODEL must contain only ASCII letters, digits, '.', '-', or '_'",
             ),
+            Self::IncompleteWebhookConfiguration => formatter.write_str(
+                "CANONICAL_WEBHOOK_URL and CANONICAL_WEBHOOK_SECRET must be configured together",
+            ),
+            Self::IncompleteSharedAuthConfiguration => formatter.write_str(
+                "SHARED_AUTH_BASE and SHARED_AUTH_INTROSPECT_SECRET must be configured together",
+            ),
+            Self::InvalidSharedAuthAudience => {
+                formatter.write_str("SHARED_AUTH_AUDIENCE must be a bounded portable identifier")
+            }
             Self::MissingInternalAuthToken => {
                 formatter.write_str("CANONICAL_INTERNAL_AUTH_TOKEN is required")
             }
@@ -138,6 +210,9 @@ impl fmt::Display for ConfigError {
             }
             Self::WeakInternalAuthToken => formatter.write_str(
                 "CANONICAL_INTERNAL_AUTH_TOKEN must contain at least 32 non-whitespace bytes",
+            ),
+            Self::WeakSharedAuthIntrospectSecret => formatter.write_str(
+                "SHARED_AUTH_INTROSPECT_SECRET must contain at least 32 non-whitespace bytes",
             ),
         }
     }
@@ -165,6 +240,8 @@ pub struct AppState {
     internal_auth_token: Arc<str>,
     next_event_sequence: Arc<AtomicU64>,
     quotes: Arc<RwLock<HashMap<Uuid, QuoteRecord>>>,
+    shared_auth: Option<SharedAuthAuthority>,
+    webhook: Option<WebhookDispatcher>,
 }
 
 impl AppState {
@@ -185,6 +262,8 @@ impl AppState {
             internal_auth_token: internal_auth_token.into(),
             next_event_sequence: Arc::new(AtomicU64::new(1)),
             quotes: Arc::new(RwLock::new(HashMap::new())),
+            shared_auth: None,
+            webhook: None,
         }
     }
 
@@ -193,6 +272,31 @@ impl AppState {
         self.gemini = Some(gemini);
         self
     }
+
+    #[must_use]
+    pub fn with_webhook(mut self, webhook: WebhookDispatcher) -> Self {
+        self.webhook = Some(webhook);
+        self
+    }
+
+    #[must_use]
+    pub fn with_shared_auth(
+        mut self,
+        client: SharedAuthClient,
+        audience: impl Into<Arc<str>>,
+    ) -> Self {
+        self.shared_auth = Some(SharedAuthAuthority {
+            audience: audience.into(),
+            client,
+        });
+        self
+    }
+}
+
+#[derive(Clone)]
+struct SharedAuthAuthority {
+    audience: Arc<str>,
+    client: SharedAuthClient,
 }
 
 #[derive(Clone)]
@@ -344,6 +448,14 @@ async fn security_headers(mut response: Response) -> Response {
     );
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     headers.insert(
+        "permissions-policy",
+        HeaderValue::from_static("camera=(), geolocation=(), microphone=()"),
+    );
+    headers.insert(
+        "strict-transport-security",
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    headers.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
@@ -357,8 +469,10 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         gemini_configured: state.gemini.is_some(),
         gemini_model: state.gemini_model.to_string(),
         service: "canonical-api-server",
+        shared_auth_configured: state.shared_auth.is_some(),
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
+        webhook_configured: state.webhook.is_some(),
     })
 }
 
@@ -367,7 +481,7 @@ async fn create_quote(
     headers: HeaderMap,
     Json(payload): Json<JsonValue>,
 ) -> Result<(StatusCode, Json<QuoteSubmissionResponse>), ApiError> {
-    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let subject = authenticate(&headers, &state).await?;
     let idempotency_key = required_idempotency_key(&headers)?;
     let request = parse_quote_request(payload)?;
     let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
@@ -480,7 +594,7 @@ async fn retry_quote(
     Path(quote_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<QuoteRetryResponse>), ApiError> {
-    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let subject = authenticate(&headers, &state).await?;
     let idempotency_key = required_idempotency_key(&headers)?;
     let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
         ApiError::service_unavailable(
@@ -721,7 +835,14 @@ async fn update_quote_state(state: &AppState, record: &mut QuoteRecord) -> bool 
 }
 
 fn publish_event(state: &AppState, event: QuoteEventRecord) {
-    let _ = state.events.send(event);
+    let _ = state.events.send(event.clone());
+    if let Some(webhook) = state.webhook.clone() {
+        tokio::spawn(async move {
+            if let Err(error) = webhook.deliver(event).await {
+                warn!(error = %error, "readiness webhook delivery failed");
+            }
+        });
+    }
 }
 
 async fn list_quotes(
@@ -729,7 +850,7 @@ async fn list_quotes(
     headers: HeaderMap,
     Query(query): Query<QuoteListQuery>,
 ) -> Result<Json<QuoteListResponse>, ApiError> {
-    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let subject = authenticate(&headers, &state).await?;
     let limit = usize::try_from(query.limit.unwrap_or(25).clamp(1, 100)).unwrap_or(25);
     let cursor = query
         .cursor
@@ -777,7 +898,7 @@ async fn get_quote(
     Path(quote_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Json<QuoteDetail>, ApiError> {
-    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let subject = authenticate(&headers, &state).await?;
     let record = find_quote(&state, quote_id, &subject).await?;
     Ok(Json(quote_detail(&record)?))
 }
@@ -809,7 +930,7 @@ async fn quote_events(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let subject = authenticate(&headers, &state.internal_auth_token)?;
+    let subject = authenticate(&headers, &state).await?;
     let record = find_quote(&state, quote_id, &subject).await?;
     let socket_permit = state.admission.reserve_websocket().map_err(|_| {
         ApiError::service_unavailable(
@@ -900,12 +1021,16 @@ async fn send_json<T: Serialize>(socket: &mut WebSocket, value: &T) -> Result<()
         .map_err(|_| ())
 }
 
-fn authenticate(headers: &HeaderMap, expected_token: &str) -> Result<String, ApiError> {
+async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError> {
     let supplied_token = headers
         .get(INTERNAL_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok());
+    let supplied_subject = headers.get(SUBJECT_HEADER);
+    if supplied_token.is_none() && supplied_subject.is_none() {
+        return authenticate_bearer(headers, state).await;
+    }
     let token_is_valid = supplied_token
-        .map(|token| bool::from(token.as_bytes().ct_eq(expected_token.as_bytes())))
+        .map(|token| bool::from(token.as_bytes().ct_eq(state.internal_auth_token.as_bytes())))
         .unwrap_or(false);
     if !token_is_valid {
         return Err(ApiError::unauthorized(
@@ -917,18 +1042,50 @@ fn authenticate(headers: &HeaderMap, expected_token: &str) -> Result<String, Api
     let subject = headers
         .get(SUBJECT_HEADER)
         .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| {
-            !value.is_empty()
-                && value.len() <= 255
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
-        })
+        .and_then(valid_subject)
         .ok_or_else(|| {
             ApiError::unauthorized("unauthorized", "authenticated subject is required")
         })?;
     Ok(subject.to_owned())
+}
+
+async fn authenticate_bearer(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError> {
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 16 * 1024)
+        .ok_or_else(unauthorized)?;
+    let authority = state.shared_auth.as_ref().ok_or_else(unauthorized)?;
+    let introspection = authority
+        .client
+        .introspect_for_audience(bearer, &authority.audience)
+        .await
+        .map_err(|_| unauthorized())?;
+    if !introspection.active {
+        return Err(unauthorized());
+    }
+    introspection
+        .sub
+        .as_deref()
+        .and_then(valid_subject)
+        .map(str::to_owned)
+        .ok_or_else(unauthorized)
+}
+
+fn valid_subject(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 255
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')))
+    .then_some(value)
+}
+
+fn unauthorized() -> ApiError {
+    ApiError::unauthorized("unauthorized", "authentication failed")
 }
 
 fn required_idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -936,12 +1093,7 @@ fn required_idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
         .get(IDEMPOTENCY_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .filter(|value| {
-            (8..=128).contains(&value.len())
-                && value.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
-                })
-        })
+        .filter(|value| ores_lib_core::valid_correlation_id(value))
         .ok_or_else(|| {
             ApiError::bad_request(
                 "invalid_request",
@@ -1027,8 +1179,10 @@ struct HealthResponse {
     gemini_configured: bool,
     gemini_model: String,
     service: &'static str,
+    shared_auth_configured: bool,
     status: &'static str,
     version: &'static str,
+    webhook_configured: bool,
 }
 
 fn map_store_error(error: persistence::StoreError) -> ApiError {
@@ -1149,6 +1303,9 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
+    use shared_auth_client::SharedAuthClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -1191,6 +1348,14 @@ mod tests {
         assert_eq!(response.headers()["x-content-type-options"], "nosniff");
         assert_eq!(response.headers()["x-frame-options"], "DENY");
         assert_eq!(
+            response.headers()["permissions-policy"],
+            "camera=(), geolocation=(), microphone=()"
+        );
+        assert_eq!(
+            response.headers()["strict-transport-security"],
+            "max-age=31536000; includeSubDomains"
+        );
+        assert_eq!(
             response.headers()["content-security-policy"],
             "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         );
@@ -1200,6 +1365,8 @@ mod tests {
         assert_eq!(body["databaseConfigured"], false);
         assert_eq!(body["geminiConfigured"], false);
         assert_eq!(body["geminiModel"], DEFAULT_GEMINI_MODEL);
+        assert_eq!(body["sharedAuthConfigured"], false);
+        assert_eq!(body["webhookConfigured"], false);
     }
 
     #[tokio::test]
@@ -1218,6 +1385,52 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+
+    #[tokio::test]
+    async fn direct_bearer_is_independently_introspected_for_the_api_audience() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let authority = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0_u8; 8192];
+            let read = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..read]);
+            let lowercase = request.to_ascii_lowercase();
+            assert!(lowercase.starts_with("post /auth/introspect http/1.1"));
+            assert!(lowercase.contains("authorization: bearer introspection-service-secret"));
+            assert!(request.contains("canonical-plus-api"));
+            assert!(request.contains("customer-access-token"));
+            let body = r#"{"active":true,"sub":"shared-auth:user-123"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = SharedAuthClient::try_new(format!("http://{address}"))
+            .unwrap()
+            .with_service_credential("introspection-service-secret");
+        let app = build_router(
+            AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None)
+                .with_shared_auth(client, "canonical-plus-api"),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/quotes")
+                    .header("authorization", "Bearer customer-access-token")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "quote:shared-auth-0001")
+                    .body(Body::from(valid_payload().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        authority.await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]

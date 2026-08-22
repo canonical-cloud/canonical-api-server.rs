@@ -3,7 +3,7 @@ name = "canonical-api-server"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
-description = "Canonical Cloud quote REST and WebSocket API"
+description = "Canonical Cloud readiness REST, WebSocket, and webhook API"
 license = "MIT"
 repository = "https://github.com/canonical-cloud/canonical-api-server.rs"
 default-run = "canonical-api-server"
@@ -17,10 +17,14 @@ axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
 canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib", rev = "8986ab23a18ca0ef14422f6348b264acbb9acc43" }
 futures-util = "0.3.32"
+hmac = "0.12.1"
+ores-lib-core = { git = "https://github.com/ores-otel/ores-lib-core", rev = "f4fcf8ccaedc679a38d9af7c1a1e4c8e3dc228cb" }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2 = "0.10.9"
+shared-auth-client = { git = "https://github.com/shared-auth/shared-auth-clients", rev = "a63d2817c92d0b018899e252536371b07d5622ea" }
 subtle = "2.6.1"
 thiserror = "2.0.18"
 time = { version = "0.3", features = ["formatting"] }

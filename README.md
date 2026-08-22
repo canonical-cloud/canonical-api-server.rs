@@ -1,12 +1,16 @@
 # canonical-api-server.rs
 
-Rust REST and WebSocket boundary for `api.canonical.plus`.
+Rust readiness-data REST, WebSocket, and signed-webhook boundary for
+`api.canonical.plus`.
 
 `app.canonical.plus` remains owned by `canonical-web-server.rs`. The web server
 authenticates the browser with the Canonical Shared Auth realm, then calls this
 service over a private or service-mesh path with a separately stored internal
-token and the already introspected subject. Internet clients cannot select their
-own `x-canonical-subject`.
+token and the already introspected subject. Direct `api.canonical.plus` clients
+present a Shared Auth bearer scoped to `canonical-plus-api`; the API
+independently introspects it through the pinned official Shared Auth Rust client.
+Internet clients cannot select their own `x-canonical-subject` or make an edge
+identity projection authoritative.
 
 ## Package direction
 
@@ -47,6 +51,9 @@ normalized intake fields and the owner-scoped `canonical_context` row.
 8. Create and retry require an `Idempotency-Key`. Replaying the same owner,
    operation, and normalized input returns the original result; incompatible
    reuse fails with `409 idempotency_key_reused` and starts no second analysis.
+9. Each accepted status transition can emit a signed, timestamped webhook with
+   a stable `quote:{quoteId}:{sequence}` identifier. Receivers can reject stale
+   deliveries and deduplicate retries without trusting arrival order.
 
 The default model is `gemini-3.6-flash` and remains configurable through
 `GEMINI_MODEL`. Requests use the Google API-key header, a fixed Google API
@@ -57,6 +64,35 @@ returned in public payloads.
 
 The generated analysis is preliminary scoping assistance for human review. It
 is not a certification, audit opinion, legal opinion, attestation, or guarantee.
+
+## Outbound readiness webhooks
+
+Set `CANONICAL_WEBHOOK_URL` and `CANONICAL_WEBHOOK_SECRET` together to deliver
+`canonical.quote.status.changed` events. The endpoint must use HTTPS, except
+for an HTTP loopback endpoint used in local development. URLs containing user
+credentials, query parameters, or fragments are rejected so secrets do not
+leak into configuration diagnostics or intermediary logs. The secret must
+contain at least 32 bytes.
+
+Every request carries:
+
+- `x-canonical-webhook-id`: the stable event identifier;
+- `x-canonical-webhook-timestamp`: a Unix timestamp;
+- `x-canonical-webhook-signature`: `v1=` followed by the lowercase hex
+  HMAC-SHA256 of `<timestamp>.<exact request body>`.
+
+Receivers should verify the signature with a constant-time comparison before
+parsing the body, enforce a narrow timestamp window, and persist the webhook ID
+before applying an effect. Delivery uses a five-second timeout, does not follow
+redirects, stops on terminal 4xx responses, and makes at most three bounded
+attempts for transport, 408, 429, and 5xx failures. Payloads omit the trusted
+subject and all model/context data.
+
+This initial dispatcher is a best-effort status signal, like the WebSocket
+stream; REST remains authoritative. It is not yet a durable customer callback
+system. Before contractual webhook delivery, write the stable event into a
+PostgreSQL outbox in the same transaction as the quote transition, lease it to
+an idempotent worker, and retain delivery receipts and dead-letter state.
 
 The API accepts at most four in-process analyses at a time, five accepted
 submissions per subject per ten-minute window, and 500 accepted submissions
@@ -81,7 +117,7 @@ certification, audit opinion, legal opinion, or guarantee of attestation.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /healthz` | Liveness plus non-secret DB/Gemini configuration state |
+| `GET /healthz` | Liveness plus non-secret DB/Gemini/webhook configuration state |
 | `POST /api/v1/quotes` | Validate, persist, and asynchronously analyze a quote |
 | `GET /api/v1/quotes/{quote_id}` | Owner-scoped durable quote status/result |
 | `POST /api/v1/quotes/{quote_id}/retry` | Idempotently requeue a failed quote |
@@ -89,7 +125,18 @@ certification, audit opinion, legal opinion, or guarantee of attestation.
 
 Cloudflare and the ingress must remove client-supplied `x-canonical-*` and
 `x-auth-*` headers. The API must not be routed directly to an unrestricted
-public origin.
+public origin. The origin accepts two non-overlapping authority paths:
+
+- private web-BFF requests use the constant-time internal token plus the
+  trusted projected subject; and
+- direct API requests use an end-user bearer that is independently introspected
+  for the exact `canonical-plus-api` audience with a separate service
+  credential.
+
+If either internal header is present, the request must satisfy the complete
+internal path and cannot fall back to bearer introspection. Missing, inactive,
+wrong-audience, malformed, or unavailable Shared Auth introspection fails with
+the same bounded `401` response.
 
 ### Private web-to-API path
 
@@ -100,7 +147,19 @@ All quote routes require both:
 - `x-canonical-subject`: the Shared Auth subject projected only by the trusted
   Canonical web tier.
 
-The API does not accept `x-canonical-user-id`, `x-canonical-user-email`, `x-canonical-service-token`, or request-body owner/tenant fields as identity authority. Cloudflare, ingress, and the web tier must remove caller-supplied internal and identity headers before forwarding.
+The API does not accept `x-auth-*`, `x-canonical-user-id`,
+`x-canonical-user-email`, `x-canonical-service-token`, or request-body
+owner/tenant fields as identity authority. Cloudflare, ingress, and the web tier
+must remove caller-supplied internal and identity headers before forwarding.
+
+### Direct Shared Auth API path
+
+Direct callers send `Authorization: Bearer <token>`. The Cloudflare Worker
+validates the distinct API audience before proxying, then the Rust service uses
+`shared-auth-client` to call protected introspection with
+`SHARED_AUTH_INTROSPECT_SECRET` and repeats the audience/active-subject decision.
+The service credential is sent only to Shared Auth; it is never forwarded to a
+product caller, placed in a request body, logged, or used as the end-user token.
 
 ## Public wire boundary
 
@@ -205,7 +264,7 @@ The protected PostgreSQL 17 CI lane proves:
 - destructive-change gating; and
 - final shadow-replay convergence.
 
-Run the same certification locally against a disposable PostgreSQL cluster:
+Run the same verification locally against a disposable PostgreSQL cluster:
 
 ```sh
 python3 scripts/verify-declarative-db-contract.py
@@ -222,7 +281,14 @@ to `failed` with the bounded code `gemini_not_configured`.
 
 - `CANONICAL_INTERNAL_AUTH_TOKEN` — private web/API service credential;
 - `DATABASE_URL` — owner-scoped PostgreSQL runtime connection;
-- `GEMINI_API_KEY` — server-side Gemini credential.
+- `GEMINI_API_KEY` — server-side Gemini credential;
+- `SHARED_AUTH_BASE` — exact Shared Auth base URL;
+- `SHARED_AUTH_INTROSPECT_SECRET` — independent protected-introspection
+  credential with at least 32 random bytes;
+- `SHARED_AUTH_AUDIENCE` — exact delegated API audience, defaulting to
+  `canonical-plus-api`;
+- `CANONICAL_WEBHOOK_URL` — optional signed status-event destination; and
+- `CANONICAL_WEBHOOK_SECRET` — paired HMAC secret with at least 32 random bytes.
 
 `GEMINI_MODEL` defaults to `gemini-3.6-flash`. `BIND_ADDRESS` defaults to
 `0.0.0.0:8080`.

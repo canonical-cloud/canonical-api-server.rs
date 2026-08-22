@@ -5,8 +5,9 @@ mod shutdown;
 
 use std::{io, time::Duration};
 
-use canonical_api_server::{build_router, AppState, Config, GeminiClient};
+use canonical_api_server::{build_router, AppState, Config, GeminiClient, WebhookDispatcher};
 use sea_orm::Database;
+use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -45,6 +46,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     if let Some(api_key) = config.gemini_api_key {
         state = state.with_gemini(GeminiClient::new(api_key, config.gemini_model.clone())?);
+    }
+    if let (Some(endpoint), Some(secret)) = (config.webhook_endpoint, config.webhook_secret) {
+        state = state.with_webhook(WebhookDispatcher::new(&endpoint, secret)?);
+    }
+    if let (Some(base), Some(secret)) = (
+        config.shared_auth_base,
+        config.shared_auth_introspect_secret,
+    ) {
+        let client = SharedAuthClient::try_new(base)?.with_service_credential(secret);
+        state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
     let app = build_router(state).merge(readiness::router(readiness_database));

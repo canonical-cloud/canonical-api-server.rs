@@ -2,9 +2,9 @@
 org = "canonical-cloud"
 name = "canonical-api-server"
 version = "0.1.0"
-description = "Canonical compliance quote REST and WebSocket API"
+description = "Canonical readiness REST, WebSocket, and webhook API"
 license = "MIT"
-keywords = ["api", "rust", "axum", "seaorm", "compliance", "gemini"]
+keywords = ["api", "rust", "axum", "seaorm", "readiness", "webhook"]
 language = "rust"
 
 [package.repository]
@@ -14,6 +14,8 @@ url = "https://github.com/canonical-cloud/canonical-api-server.rs"
 [dependencies]
 "canonical-cloud/canonical-interfaces" = "^0.1.0"
 "canonical-cloud/canonical-lib" = "^0.1.0"
+"ores-otel/ores-lib-core" = "^0.1.0"
+"shared-auth/shared-auth-clients" = "^0.1.0"
 
 [build]
 command = "cargo build --release --bin canonical-api-server"
@@ -32,6 +34,4 @@ adapter = "none"
 dir = ".vendor/.zed"
 
 [scripts]
-test = "cargo test --all-targets --all-features"
-lint = "cargo clippy --all-targets --all-features -- -D warnings"
-format = "cargo fmt --all -- --check"
+test = "cargo fmt --all -- --check && cargo test --all-targets --all-features --locked && cargo clippy --all-targets --all-features --locked -- -D warnings"
