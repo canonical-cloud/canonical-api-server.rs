@@ -71,6 +71,9 @@ GRANT SELECT, INSERT, UPDATE
     ON TABLE canonical_cloud__quote.canonical_quote
     TO canonical_cloud__quote__api_rw;
 GRANT SELECT, INSERT
+    ON TABLE canonical_cloud__quote.canonical_quote_operation
+    TO canonical_cloud__quote__api_rw;
+GRANT SELECT, INSERT
     ON TABLE canonical_cloud__quote.canonical_quote_event
     TO canonical_cloud__quote__api_rw;
 GRANT SELECT, INSERT, UPDATE
@@ -178,6 +181,31 @@ BEGIN
 
     IF NOT has_table_privilege(
         'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'INSERT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_quote_operation API privilege contract is append-only';
+    END IF;
+
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
         'canonical_cloud__quote.canonical_quote_event',
         'SELECT'
     ) OR NOT has_table_privilege(
@@ -246,6 +274,10 @@ BEGIN
     ) OR has_table_privilege(
         'canonical_cloud__quote__web_ro',
         'canonical_cloud__quote.canonical_quote',
+        'SELECT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote.canonical_quote_operation',
         'SELECT'
     ) THEN
         RAISE EXCEPTION

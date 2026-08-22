@@ -66,6 +66,7 @@ if schema.count(f"CREATE SCHEMA {NAMESPACE};") != 1:
 table_names = (
     "canonical_context",
     "canonical_quote",
+    "canonical_quote_operation",
     "canonical_quote_event",
     "canonical_model_attempt",
 )
@@ -86,6 +87,11 @@ required_constraints = (
     "canonical_quote_analysis_json_object_check",
     "canonical_quote_id_owner_unique",
     "canonical_quote_context_owner_fk",
+    "canonical_quote_operation_owner_key_pk",
+    "canonical_quote_operation_key_check",
+    "canonical_quote_operation_request_check",
+    "canonical_quote_operation_request_json_object_check",
+    "canonical_quote_operation_quote_owner_fk",
     "canonical_quote_event_details_json_object_check",
     "canonical_quote_event_quote_owner_fk",
     "canonical_model_attempt_status_finished_check",
@@ -136,6 +142,7 @@ for required in (
 for required in (
     "canonical_cloud__quote__web_ro",
     "GRANT SELECT, INSERT, UPDATE",
+    "canonical_quote_operation API privilege contract is append-only",
     "canonical_quote_event API privilege contract is not append-only",
     "has_sequence_privilege",
     "has_function_privilege",
@@ -149,6 +156,8 @@ if "GRANT ALL" in grants:
 for required in (
     'route(\n        "/readyz"',
     "canonical_cloud__quote__api_rw",
+    "canonical_quote_operation_quote_owner_fk",
+    "canonical_quote_operation_owner_policy",
     "canonical_quote_event_quote_owner_fk",
     "canonical_model_attempt_quote_owner_fk",
     "canonical_model_attempt_status_finished_check",

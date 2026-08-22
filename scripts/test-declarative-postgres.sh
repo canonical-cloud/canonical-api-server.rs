@@ -117,13 +117,14 @@ test "$(
       AND relation.relname IN (
         'canonical_context',
         'canonical_quote',
+        'canonical_quote_operation',
         'canonical_quote_event',
         'canonical_model_attempt'
       )
       AND relation.relrowsecurity
       AND relation.relforcerowsecurity
   "
-)" = "4"
+)" = "5"
 
 test "$(
   psql "$TARGET_ADMIN_URL" -Atqc "
@@ -152,15 +153,43 @@ test "$(
     )::int
   "
 )" = "0"
+for table in canonical_quote canonical_quote_operation; do
+  test "$(
+    psql "$TARGET_ADMIN_URL" -Atqc "
+      SELECT has_table_privilege(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote.${table}',
+        'SELECT'
+      )::int
+    "
+  )" = "0"
+done
+
 test "$(
   psql "$TARGET_ADMIN_URL" -Atqc "
-    SELECT has_table_privilege(
-      'canonical_cloud__quote__web_ro',
-      'canonical_cloud__quote.canonical_quote',
-      'SELECT'
-    )::int
+    SELECT
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'SELECT'
+      )::int || ':' ||
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'INSERT'
+      )::int || ':' ||
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'UPDATE'
+      )::int || ':' ||
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_quote_operation',
+        'DELETE'
+      )::int
   "
-)" = "0"
+)" = "1:1:0:0"
 
 psql "$API_URL" -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 BEGIN;
@@ -178,6 +207,42 @@ VALUES (
     'Owner A context',
     'Synthetic test context A',
     '{"source":"declarative-migrations-test"}'::jsonb
+);
+INSERT INTO canonical_cloud__quote.canonical_quote (
+    id,
+    owner_subject,
+    context_record_id,
+    request_json,
+    application_context_markdown,
+    context_snapshot_markdown,
+    context_snapshot_json,
+    gemini_model,
+    status
+)
+VALUES (
+    '11111111-1111-4111-8111-111111111111',
+    'owner-a',
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    '{"organizationName":"Owner A","frameworks":["soc2_type_2"]}'::jsonb,
+    '# application',
+    'Synthetic test context A',
+    '{"source":"declarative-migrations-test"}'::jsonb,
+    'gemini-3.6-flash',
+    'queued'
+);
+INSERT INTO canonical_cloud__quote.canonical_quote_operation (
+    owner_subject,
+    idempotency_key,
+    operation,
+    quote_id,
+    request_json
+)
+VALUES (
+    'owner-a',
+    'quote:test-owner-a',
+    'create',
+    '11111111-1111-4111-8111-111111111111',
+    '{"organizationName":"Owner A","frameworks":["soc2_type_2"]}'::jsonb
 );
 COMMIT;
 
@@ -215,10 +280,10 @@ test "$(
 BEGIN;
 SET LOCAL app.current_subject = 'owner-b';
 SELECT count(*)
-FROM canonical_cloud__quote.canonical_context;
+FROM canonical_cloud__quote.canonical_quote_operation;
 COMMIT;
 SQL
-)" = "1"
+)" = "0"
 
 set +e
 psql "$API_URL" -v ON_ERROR_STOP=1 >/dev/null 2>"$ARTIFACTS/forged-owner.err" <<'SQL'
@@ -242,6 +307,31 @@ test "$forged_owner_status" -ne 0
 grep -Eqi 'row-level security|policy' "$ARTIFACTS/forged-owner.err"
 
 set +e
+psql "$API_URL" -v ON_ERROR_STOP=1 >/dev/null 2>"$ARTIFACTS/invalid-idempotency.err" <<'SQL'
+BEGIN;
+SET LOCAL app.current_subject = 'owner-a';
+INSERT INTO canonical_cloud__quote.canonical_quote_operation (
+    owner_subject,
+    idempotency_key,
+    operation,
+    quote_id,
+    request_json
+)
+VALUES (
+    'owner-a',
+    'bad key',
+    'create',
+    '11111111-1111-4111-8111-111111111111',
+    '{}'::jsonb
+);
+COMMIT;
+SQL
+invalid_idempotency_status=$?
+set -e
+test "$invalid_idempotency_status" -ne 0
+grep -Eqi 'check constraint|violates' "$ARTIFACTS/invalid-idempotency.err"
+
+set +e
 psql "$WEB_URL" -v ON_ERROR_STOP=1 \
   -c "SELECT count(*) FROM canonical_cloud__quote.canonical_quote" \
   >/dev/null 2>"$ARTIFACTS/web-read.err"
@@ -249,6 +339,15 @@ web_read_status=$?
 set -e
 test "$web_read_status" -ne 0
 grep -Eqi 'permission denied|no permission' "$ARTIFACTS/web-read.err"
+
+set +e
+psql "$API_URL" -v ON_ERROR_STOP=1 \
+  -c "UPDATE canonical_cloud__quote.canonical_quote_operation SET operation = 'retry'" \
+  >/dev/null 2>"$ARTIFACTS/operation-update.err"
+operation_update_status=$?
+set -e
+test "$operation_update_status" -ne 0
+grep -Eqi 'permission denied|no permission' "$ARTIFACTS/operation-update.err"
 
 set +e
 psql "$API_URL" -v ON_ERROR_STOP=1 \
@@ -284,6 +383,12 @@ test "$(
     FROM canonical_cloud__quote.canonical_context
   "
 )" = "2"
+test "$(
+  psql "$TARGET_ADMIN_URL" -Atqc "
+    SELECT count(*)
+    FROM canonical_cloud__quote.canonical_quote_operation
+  "
+)" = "1"
 
 psql "$MIGRATOR_URL" -v ON_ERROR_STOP=1 \
   -c "ALTER TABLE canonical_cloud__quote.canonical_context ADD COLUMN rogue_note text" \
@@ -347,5 +452,12 @@ test "$(
     FROM canonical_cloud__quote.canonical_context
   "
 )" = "2"
+test "$(
+  psql "$TARGET_ADMIN_URL" -Atqc "
+    SELECT count(*)
+    FROM canonical_cloud__quote.canonical_quote_operation
+    WHERE idempotency_key = 'quote:test-owner-a'
+  "
+)" = "1"
 
 echo "Canonical quote PostgreSQL declarative certification passed"

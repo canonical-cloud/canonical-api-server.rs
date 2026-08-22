@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "canonical_lib": {
+    "repository": "canonical-cloud/canonical-lib",
+    "commit": "8986ab23a18ca0ef14422f6348b264acbb9acc43"
+  },
+  "canonical_interfaces": {
+    "repository": "canonical-cloud/canonical-interfaces",
+    "commit": "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef",
+    "quote_request_fixture": {
+      "path": "fixtures/quote/v1/request.json",
+      "git_blob": "fe8bf1ad08a7152d44ead22ee0d082842d28b208"
+    }
+  }
+}
