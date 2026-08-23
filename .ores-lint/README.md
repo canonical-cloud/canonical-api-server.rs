@@ -47,6 +47,44 @@ house style asks for. Enabling `implicit_return` without allowing
 `needless_return` makes the two lints contradict each other on every function in
 the crate. `selftest.sh` asserts this stays true.
 
+## Scope: sub-projects and repo boundaries
+
+The linter does **not** assume the repo root is the only project.
+
+- **Rust** — `rust.sh` finds every crate in the repo, including ones under
+  `apps/` or `clients/`. Crates that are workspace members of an already-linted
+  root are skipped (via `cargo metadata --no-deps`) so nothing is linted twice,
+  and findings from every crate are aggregated into **one** capped report.
+- **JS/TS** — a flat config at the repo root makes `eslint .` reach nested
+  packages, so the config goes in even when the JS lives in a subdirectory.
+
+**Nested git repositories are a hard boundary.** A repo checked out inside
+another repo gets its own ores-lint install; the parent must not lint it, or the
+same findings get reported twice under the wrong repo name and the same
+`package.json` gets wired with two conflicting relative paths. `rollout.mjs`
+records those boundaries in `.ores-lint/nested-repos.json`, and both halves of
+the linter read it.
+
+To exclude a repo entirely — vendored upstream forks, for instance — drop an
+empty `.ores-lint-ignore` file at its root.
+
+## Legacy config migration
+
+ESLint 9+ reads flat config **only**. Three older mechanisms are silently
+ignored, which means any repo still relying on them has not been linted at all:
+
+| legacy mechanism | status |
+|---|---|
+| `.eslintrc*` | ignored entirely; rules are dead |
+| `eslintConfig` key in `package.json` | ignored entirely |
+| `.eslintignore` | ignored, with a warning |
+
+`audit.mjs` reports every repo in each category. `.eslintignore` is ported
+automatically into flat-config `ignores` by `base.mjs` (gitignore semantics
+preserved), so its intent keeps applying. The other two need a human decision
+and are migrated per repo — porting the rules that still make sense, and saying
+in a comment which ones were dropped and why.
+
 ## Warn-only, by design
 
 `lint.sh` exits 0 no matter what it finds. It is wired into build and publish
@@ -102,11 +140,17 @@ Once you edit that file the rollout script leaves it alone.
 ## Fleet operations (from the `codes` directory)
 
 ```sh
+node .ores-lint-toolkit/audit.mjs                 # report the fleet's lint posture
+node .ores-lint-toolkit/audit.mjs --json out.json # ...as machine-readable data
 node .ores-lint-toolkit/rollout.mjs --dry-run     # preview
 node .ores-lint-toolkit/rollout.mjs               # install / re-install everywhere
 node .ores-lint-toolkit/rollout.mjs --only ores-otel
+node .ores-lint-toolkit/rollout.mjs --shard 0/8   # one slice of a fleet-wide run
 node .ores-lint-toolkit/verify.mjs                # assert every repo is correctly installed
 ```
+
+A full rollout over ~900 repos takes a few minutes. `--shard k/n` splits it into
+bounded chunks, which matters when the runner has a per-command time limit.
 
 Re-run the rollout after editing anything in `.ores-lint-toolkit/` — it is
 idempotent and propagates the change to every repo.
