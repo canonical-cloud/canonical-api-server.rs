@@ -356,3 +356,11 @@ must consume the immutable digest rather than a mutable tag.
   behavior in Kubernetes staging; and
 - implement durable cross-replica leasing and stale-claim recovery under
   DEN-2599 before treating in-flight analysis as replica-failure resilient.
+
+## Environment secrets
+
+Secrets live in this repo **encrypted** with [sops](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age):
+`env/enc/<dev|prod>.env.enc` is committed; `just env-use <name>` decrypts it to
+`env/dec/<name>.env` (gitignored, mode 0600) and symlinks `./.env` to it. The
+Nix dev shell provides the tooling, `just env-audit` runs keyless in CI, and
+containers decrypt at `docker run` — never at build. See [`env/README.md`](env/README.md).
