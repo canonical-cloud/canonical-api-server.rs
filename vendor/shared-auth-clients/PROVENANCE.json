@@ -1,0 +1,10 @@
+{
+  "source": "https://github.com/shared-auth/shared-auth-clients",
+  "commit": "a63d2817c92d0b018899e252536371b07d5622ea",
+  "subtree": "clients/rust",
+  "files": {
+    "LICENSE": "ec4cc6098130afc67f2da2af26f7d912672af773f429089cf7593c6652842965",
+    "clients/rust/Cargo.toml": "9b2b7c109105232299146a2b15494c98cef11818eece666e7245d18ed64c62dd",
+    "clients/rust/src/lib.rs": "ada4fa27f1e5b02e9fc4e401822f5aebe84a20ea6b5e8afdc1da8c04480d9647"
+  }
+}
