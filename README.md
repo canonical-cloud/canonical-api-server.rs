@@ -15,12 +15,13 @@ identity projection authoritative.
 ## Package direction
 
 ```text
-canonical-interfaces → canonical-lib → canonical-api-server.rs
+canonical-interfaces → canonical-lib-core → canonical-api-server.rs
 ```
 
 The Zed dependency graph is declared in `.zpkg.toml`. Generated transport
 contracts stay in `canonical-interfaces`; reusable quote validation and context
-assembly belong in `canonical-lib`; this repository owns HTTP, WebSocket,
+assembly belong in `canonical-lib-core` (the compatibility Rust crate remains
+`canonical-lib`); this repository owns HTTP, WebSocket,
 PostgreSQL persistence, and Gemini provider orchestration.
 
 ## Implemented quote flow
@@ -161,14 +162,45 @@ validates the distinct API audience before proxying, then the Rust service uses
 The service credential is sent only to Shared Auth; it is never forwarded to a
 product caller, placed in a request body, logged, or used as the end-user token.
 
-The official Shared Auth Rust client is consumed from the exact vendored
-snapshot at `vendor/shared-auth-clients/clients/rust`. Its provenance record
-pins private upstream commit
-`a63d2817c92d0b018899e252536371b07d5622ea` and SHA-256 digests for the client
-manifest, implementation, and repository license. This keeps CI and production
-container builds credentialless while preventing an unreviewed local fork.
-`scripts/verify-vendored-shared-auth-client.py` fails if the snapshot, path
-dependency, lockfile boundary, or file allowlist drifts.
+The official Shared Auth Rust client is consumed directly from immutable commit
+`cc57a85b276bee81ad94decc87df2f48d49cab9f`. Protected introspection sends the
+strict `IntrospectionRequest` envelope with the exact API audience and either
+`quotes:read` or `quotes:write`. The independent service credential is required
+before token constraints are parsed, responses are capped at 64 KiB, redirects
+are disabled by the client, and unknown future response fields remain forward
+compatible. Hosted builds must receive approved read access to the private
+dependency; private auth source is never copied into this public repository to
+bypass that boundary.
+
+Application logging uses the Ores Rust logger from immutable commit
+`ca176fb6768a9750d262a536952268625ffd3a8a`, bridged into the existing JSON
+tracing stream. The startup record contains fixed service metadata only; tokens,
+credentials, database URLs, identity values, request payloads, and upstream
+response bodies are excluded.
+
+## Web-to-API data-plane modes
+
+[`src/web_data_plane.rs`](src/web_data_plane.rs) is the typed, bounded policy
+source for all four supported paths. Every request carries the product audience
+and verified subject; transport service credentials remain separate and never
+appear in the product envelope.
+
+1. **Direct read-only database:** only reads are accepted, using exact role
+   `canonical_cloud__quote__web_ro`, transaction read-only mode, forced RLS,
+   bounded statements/locks, and a 1,000-row ceiling. The current deployment
+   grants no direct tables, so this mode stays disabled until reviewed read-only
+   views and grants exist; it can never be used for writes.
+2. **Stateless HTTP:** the current default. It requires HTTPS (or explicit
+   loopback/in-cluster development), a secret-store reference, no redirects,
+   a two-second connect ceiling, a ten-second request ceiling, a 64 KiB request
+   ceiling, and a 256 KiB response ceiling.
+3. **Stateful mTLS/TCP:** TLS 1.3 with CA, client-certificate, and client-key
+   references. Messages use one four-byte big-endian length prefix and reject
+   empty, oversized, truncated, or trailing frames before JSON parsing.
+4. **Durable NATS JetStream:** distinct request/status subjects, a durable
+   consumer, transactional outbox/inbox/status tables, stable dedupe keys,
+   bounded messages and acknowledgements, capped deliveries, and monotonic
+   persisted status transitions through success or dead-letter state.
 
 ## Public wire boundary
 
