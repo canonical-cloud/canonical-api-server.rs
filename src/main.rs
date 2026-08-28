@@ -2,15 +2,17 @@
 
 mod readiness;
 mod shutdown;
+mod telemetry;
 
 use std::{io, time::Duration};
 
-use canonical_api_server::{build_router, AppState, Config, GeminiClient, WebhookDispatcher};
+use canonical_api_server::{
+    build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
+};
 use sea_orm::Database;
 use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 fn shutdown_grace() -> Duration {
     const DEFAULT_MS: u64 = 30_000;
@@ -24,10 +26,7 @@ fn shutdown_grace() -> Duration {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .json()
-        .init();
+    let _telemetry = telemetry::init();
 
     let config = Config::from_env()?;
     let database = match config.database_url.as_deref() {
@@ -54,7 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.shared_auth_base,
         config.shared_auth_introspect_secret,
     ) {
-        let client = SharedAuthClient::try_new(base)?.with_service_credential(secret);
+        let client = SharedAuthClient::try_new(base)?
+            .with_service_credential(secret)
+            .with_max_response_bytes(SHARED_AUTH_MAX_RESPONSE_BYTES);
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
