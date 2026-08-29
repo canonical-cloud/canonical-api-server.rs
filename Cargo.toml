@@ -13,6 +13,7 @@ name = "canonical-api-server"
 path = "src/main.rs"
 
 [dependencies]
+k8s-web-api-data-plane = { git = "https://github.com/ORESoftware/k8s-libs-and-shared-defs.git", rev = "55adadc9f6d223d40b28ae66097dfe16930951b1", package = "k8s-web-api-data-plane" }
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
 canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }

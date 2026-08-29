@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod web_api_plane;
 mod contract;
 mod gemini;
 mod persistence;
@@ -419,6 +420,7 @@ pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     Router::new()
         .route("/healthz", get(health))
+            .route("/v1/data-plane/capabilities", axum::routing::get(|| async { axum::Json(crate::web_api_plane::capabilities()) }))
         .route("/api/v1/quotes", get(list_quotes).post(create_quote))
         .route("/api/v1/quotes/{quote_id}", get(get_quote))
         .route("/api/v1/quotes/{quote_id}/retry", post(retry_quote))
