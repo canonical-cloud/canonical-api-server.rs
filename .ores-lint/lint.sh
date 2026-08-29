@@ -38,7 +38,33 @@ if find "$ROOT" -maxdepth "$ORES_LINT_DEPTH" \
   FOUND=1
 fi
 
-[ "$FOUND" = "0" ] && echo "ores-lint: no JS or Rust project found in this repo - nothing to do"
+# Dart / Flutter: pubspec.yaml or any .dart source.
+if find "$ROOT" -maxdepth "$ORES_LINT_DEPTH" \
+     \( -name node_modules -o -name target -o -name .git -o -name vendor -o -name .vendor -o -name build \) -prune -o \
+     \( -type f -name pubspec.yaml -o -type f -name '*.dart' \) -print 2>/dev/null | head -1 | grep -q .; then
+  sh "$DIR/dart.sh" "$ROOT" | tee -a "$LOG"
+  FOUND=1
+fi
+
+# Gleam: gleam.toml or any .gleam source.
+if find "$ROOT" -maxdepth "$ORES_LINT_DEPTH" \
+     \( -name node_modules -o -name target -o -name .git -o -name vendor -o -name .vendor -o -name build \) -prune -o \
+     \( -type f -name gleam.toml -o -type f -name '*.gleam' \) -print 2>/dev/null | head -1 | grep -q .; then
+  sh "$DIR/gleam.sh" "$ROOT" | tee -a "$LOG"
+  FOUND=1
+fi
+
+# House rule shared across Rust / Dart / Gleam (TypeScript is ores/require-send).
+if command -v node >/dev/null 2>&1 && [ -f "$DIR/require-send.mjs" ]; then
+  if find "$ROOT" -maxdepth "$ORES_LINT_DEPTH" \
+       \( -name node_modules -o -name target -o -name .git -o -name vendor -o -name .vendor -o -name build \) -prune -o \
+       -type f \( -name '*.rs' -o -name '*.dart' -o -name '*.gleam' \) -print 2>/dev/null | head -1 | grep -q .; then
+    node "$DIR/require-send.mjs" "$ROOT" | tee -a "$LOG"
+    FOUND=1
+  fi
+fi
+
+[ "$FOUND" = "0" ] && echo "ores-lint: no JS, Rust, Dart or Gleam project found in this repo - nothing to do"
 
 if [ "${ORES_LINT_STRICT}" = "1" ] && grep -q 'finding(s) across' "$LOG"; then
   rm -f "$LOG"
