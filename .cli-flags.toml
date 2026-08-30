@@ -1,0 +1,76 @@
+[identity]
+service = "canonical-api-server"
+type_name = "RuntimeEnv"
+
+[help]
+url = "https://github.com/flags-2-env/flags-2-env"
+columns = ["options", "env", "type", "default", "description"]
+
+[parse]
+allow_unknown = false
+
+[env]
+ignore = ["CANONICAL_INTERNAL_AUTH_TOKEN", "CANONICAL_WEBHOOK_SECRET", "DATABASE_URL", "GEMINI_API_KEY", "SHARED_AUTH_INTROSPECT_SECRET"]
+
+[flags.help]
+env = "CLI_HELP_REQUESTED"
+long = "help"
+short = "h"
+type = "boolean"
+default = false
+help = "Print command-line help."
+
+[flags.version]
+env = "CLI_VERSION_REQUESTED"
+long = "version"
+short = "V"
+type = "boolean"
+default = false
+help = "Print the server version."
+
+[flags.bind-address]
+env = "BIND_ADDRESS"
+long = "bind-address"
+type = "string"
+default = "0.0.0.0:8080"
+help = "HTTP listener socket address."
+
+[flags.shutdown-grace-ms]
+env = "SHUTDOWN_GRACE_MS"
+long = "shutdown-grace-ms"
+type = "integer"
+default = 30000
+help = "Graceful-shutdown deadline in milliseconds."
+
+[flags.gemini-model]
+env = "GEMINI_MODEL"
+long = "gemini-model"
+type = "string"
+default = "gemini-3.6-flash"
+help = "Gemini model identifier."
+
+[flags.webhook-url]
+env = "CANONICAL_WEBHOOK_URL"
+long = "webhook-url"
+type = "string"
+help = "Validated credential-free webhook endpoint."
+
+[flags.shared-auth-base]
+env = "SHARED_AUTH_BASE"
+long = "shared-auth-base"
+type = "string"
+help = "Credential-free Shared Auth base URL."
+
+[flags.shared-auth-audience]
+env = "SHARED_AUTH_AUDIENCE"
+long = "shared-auth-audience"
+type = "string"
+default = "canonical-plus-api"
+help = "Expected Shared Auth audience."
+
+[flags.rust-log]
+env = "RUST_LOG"
+long = "rust-log"
+type = "string"
+default = "info"
+help = "Tracing filter directive."

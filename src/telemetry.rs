@@ -26,8 +26,12 @@ impl Drop for TelemetryGuard {
 }
 
 pub fn init() -> TelemetryGuard {
+    let filter = canonical_api_server::flags::var("RUST_LOG")
+        .ok()
+        .and_then(|value| EnvFilter::try_new(value).ok())
+        .unwrap_or_else(|| EnvFilter::new("info"));
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(filter)
         .json()
         .with_ansi(false)
         .with_target(true)

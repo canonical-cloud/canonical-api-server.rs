@@ -16,7 +16,7 @@ use tracing::info;
 
 fn shutdown_grace() -> Duration {
     const DEFAULT_MS: u64 = 30_000;
-    let milliseconds = std::env::var("SHUTDOWN_GRACE_MS")
+    let milliseconds = canonical_api_server::flags::var("SHUTDOWN_GRACE_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -26,6 +26,12 @@ fn shutdown_grace() -> Duration {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(output) =
+        canonical_api_server::flags::process_control().map_err(io::Error::other)?
+    {
+        print!("{output}");
+        return Ok(());
+    }
     let _telemetry = telemetry::init();
 
     let config = Config::from_env()?;

@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
 
 mod contract;
+pub mod flags;
 mod gemini;
 mod persistence;
 pub mod web_data_plane;
 mod webhook;
 
 use std::collections::{HashMap, VecDeque};
-use std::env;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -80,13 +80,13 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let internal_auth_token = env::var("CANONICAL_INTERNAL_AUTH_TOKEN")
+        let internal_auth_token = flags::var("CANONICAL_INTERNAL_AUTH_TOKEN")
             .map_err(|_| ConfigError::MissingInternalAuthToken)?;
         if internal_auth_token.trim().len() < 32 {
             return Err(ConfigError::WeakInternalAuthToken);
         }
 
-        let gemini_api_key = env::var("GEMINI_API_KEY").ok();
+        let gemini_api_key = flags::var("GEMINI_API_KEY").ok();
         if gemini_api_key
             .as_deref()
             .is_some_and(|key| key.trim().len() < 20)
@@ -94,14 +94,15 @@ impl Config {
             return Err(ConfigError::WeakGeminiApiKey);
         }
 
-        let gemini_model = env::var("GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.into());
+        let gemini_model =
+            flags::var("GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.into());
         if !is_valid_model_name(&gemini_model) {
             return Err(ConfigError::InvalidGeminiModel);
         }
 
         let (webhook_endpoint, webhook_secret) = match (
-            env::var("CANONICAL_WEBHOOK_URL").ok(),
-            env::var("CANONICAL_WEBHOOK_SECRET").ok(),
+            flags::var("CANONICAL_WEBHOOK_URL").ok(),
+            flags::var("CANONICAL_WEBHOOK_SECRET").ok(),
         ) {
             (None, None) => (None, None),
             (Some(endpoint), Some(secret)) => (Some(endpoint), Some(secret)),
@@ -109,8 +110,8 @@ impl Config {
         };
 
         let (shared_auth_base, shared_auth_introspect_secret) = match (
-            env::var("SHARED_AUTH_BASE").ok(),
-            env::var("SHARED_AUTH_INTROSPECT_SECRET").ok(),
+            flags::var("SHARED_AUTH_BASE").ok(),
+            flags::var("SHARED_AUTH_INTROSPECT_SECRET").ok(),
         ) {
             (None, None) => (None, None),
             (Some(base), Some(secret))
@@ -126,14 +127,14 @@ impl Config {
             _ => return Err(ConfigError::IncompleteSharedAuthConfiguration),
         };
         let shared_auth_audience =
-            env::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "canonical-plus-api".into());
+            flags::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "canonical-plus-api".into());
         if !valid_shared_auth_identifier(&shared_auth_audience) {
             return Err(ConfigError::InvalidSharedAuthAudience);
         }
 
         Ok(Self {
-            bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
-            database_url: env::var("DATABASE_URL").ok(),
+            bind_address: flags::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            database_url: flags::var("DATABASE_URL").ok(),
             gemini_api_key,
             gemini_model,
             internal_auth_token,
