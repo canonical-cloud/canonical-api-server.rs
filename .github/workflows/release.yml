@@ -41,6 +41,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Require private Canonical library read credential
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+        run: |
+          if [ -z "$CANONICAL_LIB_READ_TOKEN" ]; then
+            echo "CANONICAL_LIB_READ_TOKEN must grant read-only access to canonical-lib-core" >&2
+            exit 1
+          fi
+
       - name: Build and publish immutable image
         id: image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -50,6 +59,10 @@ jobs:
           tags: |
             ghcr.io/canonical-cloud/canonical-api-server.rs:main
             ghcr.io/canonical-cloud/canonical-api-server.rs:${{ github.sha }}
+          # Passed as a BuildKit secret for the private canonical-lib-core
+          # checkout; Dockerfile never persists it into the image.
+          secrets: |
+            canonical_lib_read_token=${{ secrets.CANONICAL_LIB_READ_TOKEN }}
           provenance: mode=max
           sbom: true
 
