@@ -17,12 +17,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     # Cargo's native git backend cannot read the private canonical-lib-core
-    # dependency. Use the ephemeral Actions token only through git CLI config;
-    # it is masked, process-scoped, and never written into the checkout.
+    # dependency. The repository must supply a separately scoped read-only
+    # credential; it is masked, process-scoped, and never written into source.
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: url.https://x-access-token:${{ github.token }}@github.com/.insteadOf
+      GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.CANONICAL_LIB_READ_TOKEN }}@github.com/.insteadOf
       GIT_CONFIG_VALUE_0: https://github.com/
     steps:
       - name: Check out the exact source
@@ -36,6 +36,15 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
+
+      - name: Require private Canonical library read credential
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+        run: |
+          if [ -z "$CANONICAL_LIB_READ_TOKEN" ]; then
+            echo "CANONICAL_LIB_READ_TOKEN must grant read-only access to canonical-lib-core" >&2
+            exit 1
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -82,12 +91,21 @@ jobs:
           echo "::add-mask::$token"
           echo "value=$token" >> "$GITHUB_OUTPUT"
 
+      - name: Require private Canonical library read credential
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+        run: |
+          if [ -z "$CANONICAL_LIB_READ_TOKEN" ]; then
+            echo "CANONICAL_LIB_READ_TOKEN must grant read-only access to canonical-lib-core" >&2
+            exit 1
+          fi
+
       - name: Build the production container image
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
         run: >-
           docker build
-          --secret id=github_token,env=GITHUB_TOKEN
+          --secret id=canonical_lib_read_token,env=CANONICAL_LIB_READ_TOKEN
           --tag canonical-api-server:ci
           .
 

@@ -7,11 +7,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY context ./context
 COPY db ./db
-# The private canonical-lib-core dependency is fetched with the ephemeral
+# The private canonical-lib-core dependency is fetched with the scoped
 # BuildKit secret only. GIT_CONFIG_COUNT keeps the credential out of image
 # layers, git config, build arguments, and command output.
-RUN --mount=type=secret,id=github_token \
-    token="$(cat /run/secrets/github_token)" && \
+RUN --mount=type=secret,id=canonical_lib_read_token \
+    token="$(cat /run/secrets/canonical_lib_read_token)" && \
     CARGO_NET_GIT_FETCH_WITH_CLI=true \
     GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0="url.https://x-access-token:${token}@github.com/.insteadOf" \
