@@ -50,6 +50,10 @@ jobs:
           tags: |
             ghcr.io/canonical-cloud/canonical-api-server.rs:main
             ghcr.io/canonical-cloud/canonical-api-server.rs:${{ github.sha }}
+          # Passed as a BuildKit secret for the private canonical-lib-core
+          # checkout; Dockerfile never persists it into the image.
+          secrets: |
+            github_token=${{ github.token }}
           provenance: mode=max
           sbom: true
 

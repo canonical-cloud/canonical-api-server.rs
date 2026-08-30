@@ -16,6 +16,14 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # Cargo's native git backend cannot read the private canonical-lib-core
+    # dependency. Use the ephemeral Actions token only through git CLI config;
+    # it is masked, process-scoped, and never written into the checkout.
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: url.https://x-access-token:${{ github.token }}@github.com/.insteadOf
+      GIT_CONFIG_VALUE_0: https://github.com/
     steps:
       - name: Check out the exact source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -75,7 +83,13 @@ jobs:
           echo "value=$token" >> "$GITHUB_OUTPUT"
 
       - name: Build the production container image
-        run: docker build --tag canonical-api-server:ci .
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          docker build
+          --secret id=github_token,env=GITHUB_TOKEN
+          --tag canonical-api-server:ci
+          .
 
       - name: Smoke-test the container health route
         shell: bash

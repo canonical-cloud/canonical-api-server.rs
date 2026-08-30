@@ -7,7 +7,16 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY context ./context
 COPY db ./db
-RUN cargo build --locked --release --bin canonical-api-server
+# The private canonical-lib-core dependency is fetched with the ephemeral
+# BuildKit secret only. GIT_CONFIG_COUNT keeps the credential out of image
+# layers, git config, build arguments, and command output.
+RUN --mount=type=secret,id=github_token \
+    token="$(cat /run/secrets/github_token)" && \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0="url.https://x-access-token:${token}@github.com/.insteadOf" \
+    GIT_CONFIG_VALUE_0="https://github.com/" \
+    cargo build --locked --release --bin canonical-api-server
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 WORKDIR /app
