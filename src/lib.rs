@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 
-pub mod four_transports;
 pub mod web_api_plane;
 mod contract;
 mod gemini;
