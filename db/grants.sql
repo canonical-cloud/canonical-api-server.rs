@@ -79,6 +79,15 @@ GRANT SELECT, INSERT
 GRANT SELECT, INSERT, UPDATE
     ON TABLE canonical_cloud__quote.canonical_model_attempt
     TO canonical_cloud__quote__api_rw;
+GRANT SELECT, INSERT, UPDATE
+    ON TABLE canonical_cloud__quote.canonical_pre_interest_registration
+    TO canonical_cloud__quote__api_rw;
+GRANT SELECT, INSERT
+    ON TABLE canonical_cloud__quote.canonical_pre_interest_consent
+    TO canonical_cloud__quote__api_rw;
+GRANT SELECT, INSERT, UPDATE
+    ON TABLE canonical_cloud__quote.canonical_pre_interest_outbox
+    TO canonical_cloud__quote__api_rw;
 
 GRANT USAGE, SELECT
     ON SEQUENCE canonical_cloud__quote.canonical_quote_event_sequence_id_seq
@@ -254,6 +263,81 @@ BEGIN
             'canonical_model_attempt API privilege contract is not exact';
     END IF;
 
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_registration',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_registration',
+        'INSERT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_registration',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_registration',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_registration',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_pre_interest_registration API privilege contract is not exact';
+    END IF;
+
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_consent',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_consent',
+        'INSERT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_consent',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_consent',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_consent',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_pre_interest_consent API privilege contract is append-only';
+    END IF;
+
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_outbox',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_outbox',
+        'INSERT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_outbox',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_outbox',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_pre_interest_outbox',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_pre_interest_outbox API privilege contract is not exact';
+    END IF;
+
     IF NOT has_sequence_privilege(
         'canonical_cloud__quote__api_rw',
         'canonical_cloud__quote.canonical_quote_event_sequence_id_seq',
@@ -279,9 +363,21 @@ BEGIN
         'canonical_cloud__quote__web_ro',
         'canonical_cloud__quote.canonical_quote_operation',
         'SELECT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote.canonical_pre_interest_registration',
+        'SELECT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote.canonical_pre_interest_consent',
+        'SELECT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote.canonical_pre_interest_outbox',
+        'SELECT'
     ) THEN
         RAISE EXCEPTION
-            'the web role has a forbidden direct Canonical quote database surface';
+            'the web role has a forbidden direct Canonical database surface';
     END IF;
 END;
 $$;
