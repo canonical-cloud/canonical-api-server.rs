@@ -104,7 +104,12 @@ jobs:
         env:
           DPM_BIN: ${{ runner.temp }}/dpm
           POSTGRES_ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres
-        run: bash scripts/test-declarative-postgres.sh
+        run: |
+          # dpm v0.3.2 prefers a project-local .cli-flags.toml when one is
+          # present. Run it outside this consumer checkout so it uses its own
+          # embedded CLI contract rather than Canonical's server flag schema.
+          cd "$RUNNER_TEMP"
+          bash "$GITHUB_WORKSPACE/scripts/test-declarative-postgres.sh"
 
       - name: Upload bounded migration evidence on failure
         if: failure()
