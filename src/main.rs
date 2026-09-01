@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod pre_interest;
 mod readiness;
 mod shutdown;
 mod telemetry;
@@ -36,6 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let readiness_database = database.clone();
     let database_configured = database.is_some();
     let gemini_configured = config.gemini_api_key.is_some();
+    let pre_interest_router = pre_interest::router_from_env(database.clone())?;
+    let pre_interest_enabled = pre_interest_router.is_some();
 
     let listener = TcpListener::bind(&config.bind_address).await?;
     let mut state = AppState::new(
@@ -59,12 +62,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = build_router(state).merge(readiness::router(readiness_database));
+    let mut app = build_router(state).merge(readiness::router(readiness_database));
+    if let Some(router) = pre_interest_router {
+        app = app.merge(router);
+    }
     info!(
         address = %config.bind_address,
         database_configured,
         gemini_configured,
         gemini_model = %config.gemini_model,
+        pre_interest_enabled,
         "canonical API listening"
     );
     let outcome = shutdown::serve(
