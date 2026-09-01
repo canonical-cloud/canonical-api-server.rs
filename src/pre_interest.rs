@@ -399,7 +399,10 @@ pub fn derive_request_fingerprint(
 ) -> Result<OpaqueDigest, DerivationKeyError> {
     let mut mac = new_mac(key, REQUEST_FINGERPRINT_CONTEXT)?;
     update_field(&mut mac, registration.email.expose().as_bytes());
-    update_field(&mut mac, party_type_name(registration.party_type).as_bytes());
+    update_field(
+        &mut mac,
+        party_type_name(registration.party_type).as_bytes(),
+    );
     update_optional(
         &mut mac,
         registration
@@ -416,7 +419,10 @@ pub fn derive_request_fingerprint(
     update_optional(&mut mac, registration.locale.as_deref());
     update_optional(
         &mut mac,
-        registration.referral_code.as_ref().map(SensitiveText::expose),
+        registration
+            .referral_code
+            .as_ref()
+            .map(SensitiveText::expose),
     );
     Ok(finish_mac(mac))
 }
