@@ -119,6 +119,137 @@ CREATE TABLE canonical_cloud__quote.canonical_model_attempt (
         ON DELETE CASCADE
 );
 
+CREATE TABLE canonical_cloud__quote.canonical_pre_interest_registration (
+    id uuid PRIMARY KEY,
+    normalized_email text NOT NULL,
+    email_alias text NOT NULL,
+    party_type text NOT NULL,
+    organization_name text,
+    first_source_host text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT canonical_pre_interest_registration_email_check CHECK (
+        char_length(normalized_email) BETWEEN 3 AND 254
+        AND normalized_email = lower(normalized_email)
+        AND position('@' IN normalized_email) > 1
+    ),
+    CONSTRAINT canonical_pre_interest_registration_alias_check CHECK (
+        email_alias ~ '^[0-9a-f]{64}$'
+    ),
+    CONSTRAINT canonical_pre_interest_registration_party_type_check CHECK (
+        party_type IN ('individual', 'organization')
+    ),
+    CONSTRAINT canonical_pre_interest_registration_org_name_check CHECK (
+        organization_name IS NULL
+        OR char_length(organization_name) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT canonical_pre_interest_registration_source_host_check CHECK (
+        first_source_host IN ('user.canonical.plus', 'org.canonical.plus')
+    ),
+    CONSTRAINT canonical_pre_interest_registration_party_org_check CHECK (
+        (party_type = 'individual' AND organization_name IS NULL)
+        OR (party_type = 'organization' AND organization_name IS NOT NULL)
+    ),
+    CONSTRAINT canonical_pre_interest_registration_alias_party_unique
+        UNIQUE (email_alias, party_type)
+);
+
+CREATE TABLE canonical_cloud__quote.canonical_pre_interest_consent (
+    id uuid PRIMARY KEY,
+    registration_id uuid NOT NULL,
+    request_alias text NOT NULL,
+    consent_version text NOT NULL,
+    interest_areas jsonb NOT NULL,
+    organization_name text,
+    source_host text NOT NULL,
+    locale text,
+    referral_code text,
+    consented_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT canonical_pre_interest_consent_request_alias_unique
+        UNIQUE (request_alias),
+    CONSTRAINT canonical_pre_interest_consent_request_alias_check CHECK (
+        request_alias ~ '^[0-9a-f]{64}$'
+    ),
+    CONSTRAINT canonical_pre_interest_consent_version_check CHECK (
+        char_length(consent_version) BETWEEN 1 AND 64
+        AND consent_version ~ '^[A-Za-z0-9._:-]+$'
+    ),
+    CONSTRAINT canonical_pre_interest_consent_interests_array_check CHECK (
+        jsonb_typeof(interest_areas) = 'array'
+        AND jsonb_array_length(interest_areas) BETWEEN 1 AND 20
+    ),
+    CONSTRAINT canonical_pre_interest_consent_org_name_check CHECK (
+        organization_name IS NULL
+        OR char_length(organization_name) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT canonical_pre_interest_consent_source_host_check CHECK (
+        source_host IN ('user.canonical.plus', 'org.canonical.plus')
+    ),
+    CONSTRAINT canonical_pre_interest_consent_locale_check CHECK (
+        locale IS NULL
+        OR (
+            char_length(locale) BETWEEN 2 AND 35
+            AND locale ~ '^[A-Za-z0-9-]+$'
+        )
+    ),
+    CONSTRAINT canonical_pre_interest_consent_referral_check CHECK (
+        referral_code IS NULL
+        OR (
+            char_length(referral_code) BETWEEN 1 AND 64
+            AND referral_code ~ '^[A-Za-z0-9._:-]+$'
+        )
+    ),
+    CONSTRAINT canonical_pre_interest_consent_registration_fk
+        FOREIGN KEY (registration_id)
+        REFERENCES canonical_cloud__quote.canonical_pre_interest_registration (id)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE canonical_cloud__quote.canonical_pre_interest_outbox (
+    id uuid PRIMARY KEY,
+    registration_id uuid NOT NULL,
+    consent_id uuid NOT NULL,
+    event_type text NOT NULL,
+    payload_json jsonb NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner text,
+    lease_expires_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sent_at timestamptz,
+    CONSTRAINT canonical_pre_interest_outbox_consent_unique
+        UNIQUE (consent_id),
+    CONSTRAINT canonical_pre_interest_outbox_event_type_check CHECK (
+        event_type = 'pre_interest.accepted.v1'
+    ),
+    CONSTRAINT canonical_pre_interest_outbox_status_check CHECK (
+        status IN ('pending', 'delivering', 'sent', 'dead')
+    ),
+    CONSTRAINT canonical_pre_interest_outbox_attempts_check CHECK (
+        attempts BETWEEN 0 AND 100
+    ),
+    CONSTRAINT canonical_pre_interest_outbox_payload_object_check CHECK (
+        jsonb_typeof(payload_json) = 'object'
+    ),
+    CONSTRAINT canonical_pre_interest_outbox_lease_check CHECK (
+        (status = 'delivering' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR (status <> 'delivering' AND lease_owner IS NULL AND lease_expires_at IS NULL)
+    ),
+    CONSTRAINT canonical_pre_interest_outbox_sent_check CHECK (
+        (status = 'sent' AND sent_at IS NOT NULL)
+        OR (status <> 'sent' AND sent_at IS NULL)
+    ),
+    CONSTRAINT canonical_pre_interest_outbox_registration_fk
+        FOREIGN KEY (registration_id)
+        REFERENCES canonical_cloud__quote.canonical_pre_interest_registration (id)
+        ON DELETE RESTRICT,
+    CONSTRAINT canonical_pre_interest_outbox_consent_fk
+        FOREIGN KEY (consent_id)
+        REFERENCES canonical_cloud__quote.canonical_pre_interest_consent (id)
+        ON DELETE RESTRICT
+);
+
 CREATE INDEX canonical_context_owner_active_idx
     ON canonical_cloud__quote.canonical_context (
         owner_subject,
@@ -154,6 +285,28 @@ CREATE INDEX canonical_model_attempt_quote_started_idx
         quote_id,
         started_at DESC
     );
+
+CREATE INDEX canonical_pre_interest_registration_created_idx
+    ON canonical_cloud__quote.canonical_pre_interest_registration (
+        created_at DESC,
+        id DESC
+    );
+
+CREATE INDEX canonical_pre_interest_consent_registration_time_idx
+    ON canonical_cloud__quote.canonical_pre_interest_consent (
+        registration_id,
+        consented_at DESC,
+        id DESC
+    );
+
+CREATE INDEX canonical_pre_interest_outbox_delivery_idx
+    ON canonical_cloud__quote.canonical_pre_interest_outbox (
+        status,
+        next_attempt_at,
+        created_at,
+        id
+    )
+    WHERE status IN ('pending', 'delivering');
 
 CREATE FUNCTION canonical_cloud__quote.canonical_set_updated_at()
 RETURNS trigger
@@ -194,6 +347,18 @@ ALTER TABLE canonical_cloud__quote.canonical_quote_event
 ALTER TABLE canonical_cloud__quote.canonical_model_attempt
     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE canonical_cloud__quote.canonical_model_attempt
+    FORCE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_pre_interest_registration
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_pre_interest_registration
+    FORCE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_pre_interest_consent
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_pre_interest_consent
+    FORCE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_pre_interest_outbox
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_pre_interest_outbox
     FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY canonical_context_owner_policy
@@ -239,4 +404,31 @@ USING (
 )
 WITH CHECK (
     owner_subject = current_setting('app.current_subject', TRUE)
+);
+
+CREATE POLICY canonical_pre_interest_registration_write_policy
+ON canonical_cloud__quote.canonical_pre_interest_registration
+USING (
+    current_setting('canonical.pre_interest_write', TRUE) = '1'
+)
+WITH CHECK (
+    current_setting('canonical.pre_interest_write', TRUE) = '1'
+);
+
+CREATE POLICY canonical_pre_interest_consent_write_policy
+ON canonical_cloud__quote.canonical_pre_interest_consent
+USING (
+    current_setting('canonical.pre_interest_write', TRUE) = '1'
+)
+WITH CHECK (
+    current_setting('canonical.pre_interest_write', TRUE) = '1'
+);
+
+CREATE POLICY canonical_pre_interest_outbox_write_policy
+ON canonical_cloud__quote.canonical_pre_interest_outbox
+USING (
+    current_setting('canonical.pre_interest_write', TRUE) = '1'
+)
+WITH CHECK (
+    current_setting('canonical.pre_interest_write', TRUE) = '1'
 );
