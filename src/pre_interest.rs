@@ -16,21 +16,16 @@ const MAX_LOCALE_BYTES: usize = 35;
 const MAX_REFERRAL_BYTES: usize = 64;
 const MIN_DERIVATION_KEY_BYTES: usize = 32;
 const EMAIL_ALIAS_CONTEXT: &[u8] = b"canonical.pre-interest.email-alias.v1\0";
-const REQUEST_FINGERPRINT_CONTEXT: &[u8] =
-    b"canonical.pre-interest.request-fingerprint.v1\0";
+const REQUEST_FINGERPRINT_CONTEXT: &[u8] = b"canonical.pre-interest.request-fingerprint.v1\0";
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PartyType {
     Individual,
     Organization,
 }
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum InterestArea {
     #[serde(rename = "readiness_assessment")]
     ReadinessAssessment,
@@ -69,7 +64,7 @@ impl InterestArea {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PreInterestRegistrationRequest {
     pub request_id: Uuid,
@@ -148,8 +143,8 @@ pub struct ValidatedPreInterestRegistration {
 
 impl ValidatedPreInterestRegistration {
     #[must_use]
-    pub const fn request_id(&self) -> Uuid {
-        self.request_id
+    pub fn request_id(&self) -> &Uuid {
+        &self.request_id
     }
 
     #[must_use]
@@ -348,11 +343,10 @@ pub fn validate_registration(
     if request.interest_areas.len() > MAX_INTERESTS {
         return Err(ValidationError::TooManyInterests);
     }
-    let mut unique_interests = BTreeSet::new();
-    for interest in request.interest_areas {
-        if !unique_interests.insert(interest) {
-            return Err(ValidationError::DuplicateInterest);
-        }
+    let expected_interest_count = request.interest_areas.len();
+    let interest_areas: BTreeSet<_> = request.interest_areas.into_iter().collect();
+    if interest_areas.len() != expected_interest_count {
+        return Err(ValidationError::DuplicateInterest);
     }
 
     let consent_revision = request.consent_revision.trim().to_owned();
@@ -381,7 +375,7 @@ pub fn validate_registration(
         email,
         party_type: request.party_type,
         organization_name,
-        interest_areas: unique_interests.into_iter().collect(),
+        interest_areas: interest_areas.into_iter().collect(),
         consent_revision,
         consented_at,
         source_host,
@@ -394,36 +388,37 @@ pub fn derive_email_alias(
     key: &[u8],
     email: &SensitiveText,
 ) -> Result<OpaqueDigest, DerivationKeyError> {
-    derive_hmac(key, EMAIL_ALIAS_CONTEXT, &[email.expose().as_bytes()])
+    let mut mac = new_mac(key, EMAIL_ALIAS_CONTEXT)?;
+    update_field(&mut mac, email.expose().as_bytes());
+    Ok(finish_mac(mac))
 }
 
 pub fn derive_request_fingerprint(
     key: &[u8],
     registration: &ValidatedPreInterestRegistration,
 ) -> Result<OpaqueDigest, DerivationKeyError> {
-    let mut fields = vec![
-        registration.email.expose().as_bytes(),
-        party_type_name(registration.party_type).as_bytes(),
-        registration.consent_revision.as_bytes(),
-        registration.consented_at.as_bytes(),
-        registration.source_host.as_str().as_bytes(),
-        registration.locale.as_deref().unwrap_or_default().as_bytes(),
+    let mut mac = new_mac(key, REQUEST_FINGERPRINT_CONTEXT)?;
+    update_field(&mut mac, registration.email.expose().as_bytes());
+    update_field(&mut mac, party_type_name(registration.party_type).as_bytes());
+    update_optional(
+        &mut mac,
         registration
             .organization_name
             .as_ref()
-            .map_or(&[][..], |value| value.expose().as_bytes()),
-        registration
-            .referral_code
-            .as_ref()
-            .map_or(&[][..], |value| value.expose().as_bytes()),
-    ];
-    let interest_names: Vec<&[u8]> = registration
-        .interest_areas
-        .iter()
-        .map(|interest| interest.as_str().as_bytes())
-        .collect();
-    fields.extend(interest_names);
-    derive_hmac(key, REQUEST_FINGERPRINT_CONTEXT, &fields)
+            .map(SensitiveText::expose),
+    );
+    for interest in &registration.interest_areas {
+        update_field(&mut mac, interest.as_str().as_bytes());
+    }
+    update_field(&mut mac, registration.consent_revision.as_bytes());
+    update_field(&mut mac, registration.consented_at.as_bytes());
+    update_field(&mut mac, registration.source_host.as_str().as_bytes());
+    update_optional(&mut mac, registration.locale.as_deref());
+    update_optional(
+        &mut mac,
+        registration.referral_code.as_ref().map(SensitiveText::expose),
+    );
+    Ok(finish_mac(mac))
 }
 
 pub fn accepted_response(
@@ -447,31 +442,42 @@ pub fn accepted_response(
     })
 }
 
-fn derive_hmac(
-    key: &[u8],
-    context: &[u8],
-    fields: &[&[u8]],
-) -> Result<OpaqueDigest, DerivationKeyError> {
+fn new_mac(key: &[u8], context: &[u8]) -> Result<HmacSha256, DerivationKeyError> {
     if key.len() < MIN_DERIVATION_KEY_BYTES {
         return Err(DerivationKeyError);
     }
     let mut mac = HmacSha256::new_from_slice(key).map_err(|_| DerivationKeyError)?;
     mac.update(context);
-    for field in fields {
-        let length = u64::try_from(field.len()).unwrap_or(u64::MAX);
-        mac.update(&length.to_be_bytes());
-        mac.update(field);
+    Ok(mac)
+}
+
+fn update_field(mac: &mut HmacSha256, value: &[u8]) {
+    mac.update(value);
+    mac.update(&[0]);
+}
+
+fn update_optional(mac: &mut HmacSha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            mac.update(&[1]);
+            update_field(mac, value.as_bytes());
+        }
+        None => mac.update(&[0, 0]),
     }
+}
+
+fn finish_mac(mac: HmacSha256) -> OpaqueDigest {
     let bytes = mac.finalize().into_bytes();
     let mut digest = [0_u8; 32];
     digest.copy_from_slice(&bytes);
-    Ok(OpaqueDigest(digest))
+    OpaqueDigest(digest)
 }
 
 fn normalize_email(value: &str) -> Result<String, ValidationError> {
     let trimmed = value.trim();
     if trimmed.is_empty()
         || trimmed.len() > MAX_EMAIL_BYTES
+        || !trimmed.is_ascii()
         || trimmed
             .chars()
             .any(|character| character.is_control() || character.is_whitespace())
@@ -479,28 +485,26 @@ fn normalize_email(value: &str) -> Result<String, ValidationError> {
         return Err(ValidationError::InvalidEmail);
     }
 
-    let mut parts = trimmed.split('@');
-    let local = parts.next().unwrap_or_default();
-    let domain = parts.next().unwrap_or_default();
-    if parts.next().is_some()
-        || local.is_empty()
+    let Some((local, domain)) = trimmed.split_once('@') else {
+        return Err(ValidationError::InvalidEmail);
+    };
+    if local.is_empty()
         || domain.is_empty()
+        || domain.contains('@')
         || local.starts_with('.')
         || local.ends_with('.')
         || local.contains("..")
         || !domain.contains('.')
+        || !domain.split('.').all(valid_domain_label)
     {
         return Err(ValidationError::InvalidEmail);
     }
-    if !domain.split('.').all(valid_domain_label) {
-        return Err(ValidationError::InvalidEmail);
-    }
 
-    let normalized = format!("{}@{}", local.to_lowercase(), domain.to_ascii_lowercase());
-    if normalized.len() > MAX_EMAIL_BYTES {
-        return Err(ValidationError::InvalidEmail);
-    }
-    Ok(normalized)
+    Ok(format!(
+        "{}@{}",
+        local.to_ascii_lowercase(),
+        domain.to_ascii_lowercase()
+    ))
 }
 
 fn valid_domain_label(label: &str) -> bool {
@@ -525,10 +529,7 @@ fn normalize_organization_name(value: &str) -> Result<String, ValidationError> {
 
 fn normalize_locale(value: &str) -> Result<String, ValidationError> {
     let normalized = value.trim();
-    if normalized.len() < 2
-        || normalized.len() > MAX_LOCALE_BYTES
-        || !is_locale(normalized)
-    {
+    if normalized.len() < 2 || normalized.len() > MAX_LOCALE_BYTES || !is_locale(normalized) {
         return Err(ValidationError::InvalidLocale);
     }
     Ok(normalized.to_owned())
@@ -563,8 +564,7 @@ fn is_locale(value: &str) -> bool {
         return false;
     }
     segments.all(|segment| {
-        (2..=8).contains(&segment.len())
-            && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        (2..=8).contains(&segment.len()) && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
     })
 }
 
@@ -576,23 +576,18 @@ fn is_rfc3339(value: &str) -> bool {
         || bytes.get(10) != Some(&b'T')
         || bytes.get(13) != Some(&b':')
         || bytes.get(16) != Some(&b':')
+        || !bytes[..4].iter().all(u8::is_ascii_digit)
     {
         return false;
     }
 
-    let Some(month) = parse_two(bytes, 5) else {
-        return false;
-    };
-    let Some(day) = parse_two(bytes, 8) else {
-        return false;
-    };
-    let Some(hour) = parse_two(bytes, 11) else {
-        return false;
-    };
-    let Some(minute) = parse_two(bytes, 14) else {
-        return false;
-    };
-    let Some(second) = parse_two(bytes, 17) else {
+    let (Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        parse_two(bytes, 5),
+        parse_two(bytes, 8),
+        parse_two(bytes, 11),
+        parse_two(bytes, 14),
+        parse_two(bytes, 17),
+    ) else {
         return false;
     };
     if !(1..=12).contains(&month)
@@ -600,7 +595,6 @@ fn is_rfc3339(value: &str) -> bool {
         || hour > 23
         || minute > 59
         || second > 60
-        || !bytes[..4].iter().all(u8::is_ascii_digit)
     {
         return false;
     }
@@ -609,10 +603,7 @@ fn is_rfc3339(value: &str) -> bool {
     if bytes.get(timezone_index) == Some(&b'.') {
         timezone_index += 1;
         let fraction_start = timezone_index;
-        while bytes
-            .get(timezone_index)
-            .is_some_and(u8::is_ascii_digit)
-        {
+        while bytes.get(timezone_index).is_some_and(u8::is_ascii_digit) {
             timezone_index += 1;
         }
         if timezone_index == fraction_start {
@@ -662,10 +653,7 @@ mod tests {
             email: " Person@EXAMPLE.COM ".into(),
             party_type: PartyType::Individual,
             organization_name: None,
-            interest_areas: vec![
-                InterestArea::Soc2,
-                InterestArea::ReadinessAssessment,
-            ],
+            interest_areas: vec![InterestArea::Soc2, InterestArea::ReadinessAssessment],
             consent_revision: "pre-interest-v1".into(),
             consented_at: "2026-09-01T15:30:00Z".into(),
             source_host: "user.canonical.plus".into(),
@@ -676,10 +664,12 @@ mod tests {
 
     #[test]
     fn validates_and_canonicalizes_an_individual_registration() {
-        let registration =
-            validate_registration(individual_request(), "user.canonical.plus")
-                .expect("valid individual");
-        assert_eq!(registration.normalized_email().expose(), "person@example.com");
+        let registration = validate_registration(individual_request(), "user.canonical.plus")
+            .expect("valid individual");
+        assert_eq!(
+            registration.normalized_email().expose(),
+            "person@example.com"
+        );
         assert_eq!(registration.source_host(), RegistrationHost::User);
         assert_eq!(registration.party_type(), PartyType::Individual);
         assert_eq!(
@@ -705,8 +695,7 @@ mod tests {
         );
 
         request.organization_name = Some("  Example   Security  ".into());
-        let registration =
-            validate_registration(request, "org.canonical.plus").expect("valid org");
+        let registration = validate_registration(request, "org.canonical.plus").expect("valid org");
         assert_eq!(
             registration.organization_name().map(SensitiveText::expose),
             Some("Example Security")
@@ -758,9 +747,8 @@ mod tests {
 
     #[test]
     fn debug_output_redacts_contact_fields() {
-        let registration =
-            validate_registration(individual_request(), "user.canonical.plus")
-                .expect("valid request");
+        let registration = validate_registration(individual_request(), "user.canonical.plus")
+            .expect("valid request");
         let debug = format!("{registration:?}");
         assert!(!debug.contains("person@example.com"));
         assert!(!debug.contains("launch-2026"));
@@ -768,16 +756,12 @@ mod tests {
     }
 
     #[test]
-    fn alias_and_request_fingerprint_are_keyed_and_domain_separated() {
-        let registration =
-            validate_registration(individual_request(), "user.canonical.plus")
-                .expect("valid request");
-        let alias_a =
-            derive_email_alias(KEY_A, registration.normalized_email()).expect("alias");
-        let alias_b =
-            derive_email_alias(KEY_B, registration.normalized_email()).expect("alias");
-        let fingerprint =
-            derive_request_fingerprint(KEY_A, &registration).expect("fingerprint");
+    fn aliases_and_fingerprints_are_keyed_and_domain_separated() {
+        let registration = validate_registration(individual_request(), "user.canonical.plus")
+            .expect("valid request");
+        let alias_a = derive_email_alias(KEY_A, registration.normalized_email()).expect("alias");
+        let alias_b = derive_email_alias(KEY_B, registration.normalized_email()).expect("alias");
+        let fingerprint = derive_request_fingerprint(KEY_A, &registration).expect("fingerprint");
 
         assert_eq!(
             alias_a,
@@ -795,13 +779,11 @@ mod tests {
 
     #[test]
     fn request_fingerprint_is_independent_of_interest_input_order() {
-        let first =
-            validate_registration(individual_request(), "user.canonical.plus")
-                .expect("valid request");
+        let first = validate_registration(individual_request(), "user.canonical.plus")
+            .expect("valid request");
         let mut reversed = individual_request();
         reversed.interest_areas.reverse();
-        let second =
-            validate_registration(reversed, "user.canonical.plus").expect("valid request");
+        let second = validate_registration(reversed, "user.canonical.plus").expect("valid request");
         assert_eq!(
             derive_request_fingerprint(KEY_A, &first).expect("fingerprint"),
             derive_request_fingerprint(KEY_A, &second).expect("fingerprint")
@@ -809,8 +791,7 @@ mod tests {
 
         let mut changed = individual_request();
         changed.consent_revision = "pre-interest-v2".into();
-        let changed =
-            validate_registration(changed, "user.canonical.plus").expect("valid request");
+        let changed = validate_registration(changed, "user.canonical.plus").expect("valid request");
         assert_ne!(
             derive_request_fingerprint(KEY_A, &first).expect("fingerprint"),
             derive_request_fingerprint(KEY_A, &changed).expect("fingerprint")
@@ -820,8 +801,7 @@ mod tests {
     #[test]
     fn accepted_response_exposes_no_new_or_existing_state() {
         let response = accepted_response(
-            Uuid::parse_str("ca761232-ed42-11ce-bacd-00aa0057b223")
-                .expect("fixture UUID"),
+            Uuid::parse_str("ca761232-ed42-11ce-bacd-00aa0057b223").expect("fixture UUID"),
             "2026-09-01T15:32:00Z",
             PartyType::Individual,
         )
@@ -853,8 +833,17 @@ mod tests {
         ] {
             assert!(sql.contains(required), "missing SQL boundary: {required}");
         }
-        for forbidden in ["CREATE ROLE", "GRANT ALL", "IF NOT EXISTS", "BEGIN;", "COMMIT;"] {
-            assert!(!sql.contains(forbidden), "forbidden lifecycle SQL: {forbidden}");
+        for forbidden in [
+            "CREATE ROLE",
+            "GRANT ALL",
+            "IF NOT EXISTS",
+            "BEGIN;",
+            "COMMIT;",
+        ] {
+            assert!(
+                !sql.contains(forbidden),
+                "forbidden lifecycle SQL: {forbidden}"
+            );
         }
     }
 }
