@@ -1,0 +1,87 @@
+name: pre-interest foundation
+
+on:
+  pull_request:
+    paths:
+      - src/pre_interest.rs
+      - tests/pre_interest.rs
+      - db/candidates/pre_interest_v1.sql
+      - .github/workflows/pre-interest-foundation.yml
+  push:
+    branches: [main]
+    paths:
+      - src/pre_interest.rs
+      - tests/pre_interest.rs
+      - db/candidates/pre_interest_v1.sql
+      - .github/workflows/pre-interest-foundation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-api-pre-interest-foundation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-rust-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact API source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v6.0.2
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Check repository formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build an isolated exact-direct-dependency test crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/pre-interest-foundation"
+          mkdir -p "${work}/src" "${work}/db/candidates"
+          cp src/pre_interest.rs "${work}/src/lib.rs"
+          cp db/candidates/pre_interest_v1.sql \
+            "${work}/db/candidates/pre_interest_v1.sql"
+          cat > "${work}/Cargo.toml" <<'TOML'
+          [package]
+          name = "canonical-pre-interest-foundation-check"
+          version = "0.0.0"
+          edition = "2021"
+          rust-version = "1.95"
+          publish = false
+
+          [dependencies]
+          hmac = "=0.12.1"
+          reqwest = { version = "=0.13.4", default-features = false }
+          serde = { version = "=1.0.228", features = ["derive"] }
+          serde_json = "=1.0.145"
+          sha2 = "=0.10.9"
+          uuid = { version = "=1.23.0", features = ["serde", "v4"] }
+
+          [lints.rust]
+          unsafe_code = "forbid"
+          TOML
+          cargo generate-lockfile --manifest-path "${work}/Cargo.toml"
+          cargo test --manifest-path "${work}/Cargo.toml" --locked
+
+      - name: Record the unresolved repository dependency boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Scope of this lane'
+            echo
+            echo '- Compiles and runs every unit test embedded in `src/pre_interest.rs`.'
+            echo '- Verifies the candidate SQL through its embedded contract assertions.'
+            echo '- Does not claim the full API crate or container is green.'
+            echo '- Full-crate CI remains gated on authenticated distribution of the private `canonical-lib-core` dependency (DEN-2050).'
+          } >> "$GITHUB_STEP_SUMMARY"
