@@ -15,7 +15,6 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
-canonical-interfaces = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-interfaces", rev = "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef" }
 canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
 futures-util = "0.3.32"
 hmac = "0.12.1"
