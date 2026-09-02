@@ -13,6 +13,8 @@ CREATE TABLE canonical_cloud__interest.canonical_pre_interest_registration (
     email_ciphertext bytea NOT NULL,
     party_type text NOT NULL,
     organization_name_ciphertext bytea,
+    display_name_ciphertext bytea,
+    website_url_ciphertext bytea,
     first_accepted_at timestamptz NOT NULL,
     last_accepted_at timestamptz NOT NULL,
     CONSTRAINT canonical_pre_interest_email_alias_length_check
@@ -45,6 +47,9 @@ CREATE TABLE canonical_cloud__interest.canonical_pre_interest_submission (
     party_type text NOT NULL,
     source_host text NOT NULL,
     consent_revision text NOT NULL,
+    registration_consent boolean NOT NULL,
+    marketing_consent boolean NOT NULL,
+    marketing_consent_revision text,
     client_consented_at timestamptz NOT NULL,
     accepted_at timestamptz NOT NULL,
     interest_areas text[] NOT NULL,
@@ -75,6 +80,21 @@ CREATE TABLE canonical_cloud__interest.canonical_pre_interest_submission (
         CHECK (cardinality(interest_areas) BETWEEN 1 AND 9),
     CONSTRAINT canonical_pre_interest_consent_revision_length_check
         CHECK (length(consent_revision) BETWEEN 1 AND 64),
+    CONSTRAINT canonical_pre_interest_registration_consent_check
+        CHECK (registration_consent),
+    CONSTRAINT canonical_pre_interest_marketing_consent_consistency_check
+        CHECK (
+            (
+                marketing_consent
+                AND marketing_consent_revision IS NOT NULL
+                AND length(marketing_consent_revision) BETWEEN 1 AND 64
+            )
+            OR
+            (
+                NOT marketing_consent
+                AND marketing_consent_revision IS NULL
+            )
+        ),
     CONSTRAINT canonical_pre_interest_locale_length_check
         CHECK (locale IS NULL OR length(locale) BETWEEN 2 AND 35)
 );
@@ -89,6 +109,9 @@ CREATE TABLE canonical_cloud__interest.canonical_pre_interest_consent_event (
     submission_id uuid NOT NULL,
     registration_id uuid NOT NULL,
     consent_revision text NOT NULL,
+    registration_consent boolean NOT NULL,
+    marketing_consent boolean NOT NULL,
+    marketing_consent_revision text,
     source_host text NOT NULL,
     client_consented_at timestamptz NOT NULL,
     accepted_at timestamptz NOT NULL,
@@ -102,6 +125,21 @@ CREATE TABLE canonical_cloud__interest.canonical_pre_interest_consent_event (
         FOREIGN KEY (registration_id)
         REFERENCES canonical_cloud__interest.canonical_pre_interest_registration (
             registration_id
+        ),
+    CONSTRAINT canonical_pre_interest_consent_registration_check
+        CHECK (registration_consent),
+    CONSTRAINT canonical_pre_interest_consent_marketing_consistency_check
+        CHECK (
+            (
+                marketing_consent
+                AND marketing_consent_revision IS NOT NULL
+                AND length(marketing_consent_revision) BETWEEN 1 AND 64
+            )
+            OR
+            (
+                NOT marketing_consent
+                AND marketing_consent_revision IS NULL
+            )
         ),
     CONSTRAINT canonical_pre_interest_consent_event_digest_length_check
         CHECK (octet_length(event_digest) = 32)
