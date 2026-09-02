@@ -21,11 +21,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout the exact merged Zed lifecycle engine
+      - name: Checkout the exact current Zed release-fallback implementation
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: zed-pkg/zed-cli
-          ref: d8763b8dcc3bd5c5b6b4b1d13519065a6a2cb99a
+          ref: 5c65985274dd42b5974db51c73adc256cb28bbdb
           path: .tools/zed-cli
           persist-credentials: false
 
@@ -52,6 +52,7 @@ jobs:
           cat "$RUNNER_TEMP/zed-materialized-files.txt"
 
       - name: Retain the exact resolver outputs
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: canonical-api-zed-install
@@ -61,4 +62,4 @@ jobs:
             ${{ runner.temp }}/zed-install-help.txt
             ${{ runner.temp }}/zed-materialized-files.txt
           retention-days: 1
-          if-no-files-found: error
+          if-no-files-found: warn
