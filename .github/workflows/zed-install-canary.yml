@@ -1,0 +1,64 @@
+name: exact Zed dependency materialization canary
+
+on:
+  pull_request:
+    paths:
+      - '.zpkg.toml'
+      - '.zpkg/**'
+      - '.github/workflows/zed-install-canary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zed-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the API server
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Checkout the exact merged Zed lifecycle engine
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: zed-pkg/zed-cli
+          ref: d8763b8dcc3bd5c5b6b4b1d13519065a6a2cb99a
+          path: .tools/zed-cli
+          persist-credentials: false
+
+      - name: Build the exact Zed CLI
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/zed-cli-target
+        run: >-
+          cargo build --locked
+          --manifest-path .tools/zed-cli/Cargo.toml
+          --bin zed
+
+      - name: Resolve and materialize every declared Zed dependency
+        env:
+          ZED_BIN: ${{ runner.temp }}/zed-cli-target/debug/zed
+        run: |
+          set -eu
+          "$ZED_BIN" install --help > "$RUNNER_TEMP/zed-install-help.txt"
+          ZED_SKIP_LIFECYCLE=1 "$ZED_BIN" install
+          test -s .zpkg.lock
+          test "$(tr -d '[:space:]' < .zpkg.lock)" != 'version=1'
+          test -d .vendor/.zed
+          find .vendor/.zed -maxdepth 4 -type f -print | LC_ALL=C sort > "$RUNNER_TEMP/zed-materialized-files.txt"
+          test -s "$RUNNER_TEMP/zed-materialized-files.txt"
+          cat "$RUNNER_TEMP/zed-materialized-files.txt"
+
+      - name: Retain the exact resolver outputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: canonical-api-zed-install
+          path: |
+            .zpkg.lock
+            .vendor/.zed
+            ${{ runner.temp }}/zed-install-help.txt
+            ${{ runner.temp }}/zed-materialized-files.txt
+          retention-days: 1
+          if-no-files-found: error
