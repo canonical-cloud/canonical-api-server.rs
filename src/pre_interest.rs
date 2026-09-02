@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use hmac::{Hmac, Mac};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
@@ -10,13 +11,18 @@ type HmacSha256 = Hmac<Sha256>;
 
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_ORGANIZATION_CHARS: usize = 200;
+const MAX_DISPLAY_NAME_CHARS: usize = 120;
+const MAX_WEBSITE_URL_BYTES: usize = 2_048;
 const MAX_INTERESTS: usize = 9;
 const MAX_CONSENT_REVISION_BYTES: usize = 64;
+const MAX_MARKETING_CONSENT_REVISION_BYTES: usize = 64;
 const MAX_LOCALE_BYTES: usize = 35;
 const MAX_REFERRAL_BYTES: usize = 64;
 const MIN_DERIVATION_KEY_BYTES: usize = 32;
 const EMAIL_ALIAS_CONTEXT: &[u8] = b"canonical.pre-interest.email-alias.v1\0";
-const REQUEST_FINGERPRINT_CONTEXT: &[u8] = b"canonical.pre-interest.request-fingerprint.v1\0";
+const REQUEST_FINGERPRINT_CONTEXT: &[u8] =
+    b"canonical.pre-interest.request-fingerprint.v1\0";
+const QUOTE_NEXT_STEP_URL: &str = "https://user.canonical.plus/u/quote";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +83,11 @@ pub struct PreInterestRegistrationRequest {
     pub source_host: String,
     pub locale: Option<String>,
     pub referral_code: Option<String>,
+    pub display_name: Option<String>,
+    pub website_url: Option<String>,
+    pub registration_consent: bool,
+    pub marketing_consent: bool,
+    pub marketing_consent_revision: Option<String>,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -139,6 +150,11 @@ pub struct ValidatedPreInterestRegistration {
     source_host: RegistrationHost,
     locale: Option<String>,
     referral_code: Option<SensitiveText>,
+    display_name: Option<SensitiveText>,
+    website_url: Option<SensitiveText>,
+    registration_consent: bool,
+    marketing_consent: bool,
+    marketing_consent_revision: Option<String>,
 }
 
 impl ValidatedPreInterestRegistration {
@@ -191,6 +207,31 @@ impl ValidatedPreInterestRegistration {
     pub fn referral_code(&self) -> Option<&SensitiveText> {
         self.referral_code.as_ref()
     }
+
+    #[must_use]
+    pub fn display_name(&self) -> Option<&SensitiveText> {
+        self.display_name.as_ref()
+    }
+
+    #[must_use]
+    pub fn website_url(&self) -> Option<&SensitiveText> {
+        self.website_url.as_ref()
+    }
+
+    #[must_use]
+    pub const fn registration_consent(&self) -> bool {
+        self.registration_consent
+    }
+
+    #[must_use]
+    pub const fn marketing_consent(&self) -> bool {
+        self.marketing_consent
+    }
+
+    #[must_use]
+    pub fn marketing_consent_revision(&self) -> Option<&str> {
+        self.marketing_consent_revision.as_deref()
+    }
 }
 
 impl fmt::Debug for ValidatedPreInterestRegistration {
@@ -210,6 +251,14 @@ impl fmt::Debug for ValidatedPreInterestRegistration {
             .field("source_host", &self.source_host)
             .field("locale", &self.locale)
             .field("referral_code_present", &self.referral_code.is_some())
+            .field("display_name_present", &self.display_name.is_some())
+            .field("website_url_present", &self.website_url.is_some())
+            .field("registration_consent", &self.registration_consent)
+            .field("marketing_consent", &self.marketing_consent)
+            .field(
+                "marketing_consent_revision_present",
+                &self.marketing_consent_revision.is_some(),
+            )
             .finish()
     }
 }
@@ -247,16 +296,21 @@ pub enum ValidationError {
     EmptyInterestSet,
     InvalidConsentRevision,
     InvalidConsentedAt,
+    InvalidDisplayName,
     InvalidEmail,
     InvalidLocale,
+    InvalidMarketingConsentRevision,
     InvalidOrganizationName,
     InvalidReferralCode,
     InvalidSourceHost,
+    InvalidWebsiteUrl,
     OrganizationNameForbidden,
     OrganizationNameRequired,
     PartyHostMismatch,
+    RegistrationConsentRequired,
     SourceHostMismatch,
     TooManyInterests,
+    UnexpectedMarketingConsentRevision,
 }
 
 impl fmt::Display for ValidationError {
@@ -266,11 +320,16 @@ impl fmt::Display for ValidationError {
             Self::EmptyInterestSet => "at least one interest area is required",
             Self::InvalidConsentRevision => "consent revision is invalid",
             Self::InvalidConsentedAt => "consent timestamp is invalid",
+            Self::InvalidDisplayName => "display name is invalid",
             Self::InvalidEmail => "email is invalid",
             Self::InvalidLocale => "locale is invalid",
+            Self::InvalidMarketingConsentRevision => {
+                "marketing consent revision is invalid"
+            }
             Self::InvalidOrganizationName => "organization name is invalid",
             Self::InvalidReferralCode => "referral code is invalid",
             Self::InvalidSourceHost => "registration host is invalid",
+            Self::InvalidWebsiteUrl => "website URL is invalid",
             Self::OrganizationNameForbidden => {
                 "organization name is forbidden for individual registration"
             }
@@ -278,10 +337,16 @@ impl fmt::Display for ValidationError {
                 "organization name is required for organization registration"
             }
             Self::PartyHostMismatch => "registration host and party type do not agree",
+            Self::RegistrationConsentRequired => {
+                "registration consent must be affirmatively granted"
+            }
             Self::SourceHostMismatch => {
                 "request source host does not match the verified request host"
             }
             Self::TooManyInterests => "too many interest areas were supplied",
+            Self::UnexpectedMarketingConsentRevision => {
+                "marketing consent revision is forbidden without marketing consent"
+            }
         })
     }
 }
@@ -312,68 +377,120 @@ pub fn validate_registration(
     request: PreInterestRegistrationRequest,
     verified_host: &str,
 ) -> Result<ValidatedPreInterestRegistration, ValidationError> {
+    let PreInterestRegistrationRequest {
+        request_id,
+        email,
+        party_type,
+        organization_name,
+        interest_areas,
+        consent_revision,
+        consented_at,
+        source_host: request_source_host,
+        locale,
+        referral_code,
+        display_name,
+        website_url,
+        registration_consent,
+        marketing_consent,
+        marketing_consent_revision,
+    } = request;
+
     let source_host = RegistrationHost::parse(verified_host)?;
-    if request.source_host != verified_host {
+    if request_source_host != verified_host {
         return Err(ValidationError::SourceHostMismatch);
     }
-    if request.party_type != source_host.party_type() {
+    if party_type != source_host.party_type() {
         return Err(ValidationError::PartyHostMismatch);
     }
+    if !registration_consent {
+        return Err(ValidationError::RegistrationConsentRequired);
+    }
 
-    let email = SensitiveText(normalize_email(&request.email)?);
-    let organization_name = match request.party_type {
+    let email = SensitiveText(normalize_email(&email)?);
+    let organization_name = match party_type {
         PartyType::Individual => {
-            if request.organization_name.is_some() {
+            if organization_name.is_some() {
                 return Err(ValidationError::OrganizationNameForbidden);
             }
             None
         }
         PartyType::Organization => {
-            let value = request
-                .organization_name
+            let value = organization_name
                 .as_deref()
                 .ok_or(ValidationError::OrganizationNameRequired)?;
-            Some(SensitiveText(normalize_organization_name(value)?))
+            Some(SensitiveText(normalize_human_text(
+                value,
+                MAX_ORGANIZATION_CHARS,
+                ValidationError::InvalidOrganizationName,
+            )?))
         }
     };
+    let display_name = display_name
+        .as_deref()
+        .map(|value| {
+            normalize_human_text(
+                value,
+                MAX_DISPLAY_NAME_CHARS,
+                ValidationError::InvalidDisplayName,
+            )
+        })
+        .transpose()?
+        .map(SensitiveText);
+    let website_url = website_url
+        .as_deref()
+        .map(normalize_website_url)
+        .transpose()?
+        .map(SensitiveText);
 
-    if request.interest_areas.is_empty() {
+    if interest_areas.is_empty() {
         return Err(ValidationError::EmptyInterestSet);
     }
-    if request.interest_areas.len() > MAX_INTERESTS {
+    if interest_areas.len() > MAX_INTERESTS {
         return Err(ValidationError::TooManyInterests);
     }
-    let expected_interest_count = request.interest_areas.len();
-    let interest_areas: BTreeSet<_> = request.interest_areas.into_iter().collect();
+    let expected_interest_count = interest_areas.len();
+    let interest_areas: BTreeSet<_> = interest_areas.into_iter().collect();
     if interest_areas.len() != expected_interest_count {
         return Err(ValidationError::DuplicateInterest);
     }
 
-    let consent_revision = request.consent_revision.trim().to_owned();
+    let consent_revision = consent_revision.trim().to_owned();
     if !is_portable_identifier(&consent_revision, MAX_CONSENT_REVISION_BYTES) {
         return Err(ValidationError::InvalidConsentRevision);
     }
-    let consented_at = request.consented_at.trim().to_owned();
+    let consented_at = consented_at.trim().to_owned();
     if !is_rfc3339(&consented_at) {
         return Err(ValidationError::InvalidConsentedAt);
     }
 
-    let locale = request
-        .locale
-        .as_deref()
-        .map(normalize_locale)
-        .transpose()?;
-    let referral_code = request
-        .referral_code
+    let locale = locale.as_deref().map(normalize_locale).transpose()?;
+    let referral_code = referral_code
         .as_deref()
         .map(normalize_referral)
         .transpose()?
         .map(SensitiveText);
+    let marketing_consent_revision =
+        match (marketing_consent, marketing_consent_revision.as_deref()) {
+            (true, Some(value)) => {
+                let value = value.trim();
+                if !is_portable_identifier(value, MAX_MARKETING_CONSENT_REVISION_BYTES) {
+                    return Err(ValidationError::InvalidMarketingConsentRevision);
+                }
+                Some(value.to_owned())
+            }
+            (true, None) => {
+                return Err(ValidationError::InvalidMarketingConsentRevision);
+            }
+            (false, Some(_)) => {
+                return Err(ValidationError::UnexpectedMarketingConsentRevision);
+            }
+            (false, None) => None,
+        };
 
     Ok(ValidatedPreInterestRegistration {
-        request_id: request.request_id,
+        request_id,
         email,
-        party_type: request.party_type,
+        party_type,
         organization_name,
         interest_areas: interest_areas.into_iter().collect(),
         consent_revision,
@@ -381,6 +498,11 @@ pub fn validate_registration(
         source_host,
         locale,
         referral_code,
+        display_name,
+        website_url,
+        registration_consent: true,
+        marketing_consent,
+        marketing_consent_revision,
     })
 }
 
@@ -424,27 +546,49 @@ pub fn derive_request_fingerprint(
             .as_ref()
             .map(SensitiveText::expose),
     );
+    update_optional(
+        &mut mac,
+        registration
+            .display_name
+            .as_ref()
+            .map(SensitiveText::expose),
+    );
+    update_optional(
+        &mut mac,
+        registration
+            .website_url
+            .as_ref()
+            .map(SensitiveText::expose),
+    );
+    update_field(
+        &mut mac,
+        boolean_name(registration.registration_consent).as_bytes(),
+    );
+    update_field(
+        &mut mac,
+        boolean_name(registration.marketing_consent).as_bytes(),
+    );
+    update_optional(
+        &mut mac,
+        registration.marketing_consent_revision.as_deref(),
+    );
     Ok(finish_mac(mac))
 }
 
 pub fn accepted_response(
     receipt_id: Uuid,
     accepted_at: impl Into<String>,
-    party_type: PartyType,
+    _party_type: PartyType,
 ) -> Result<PreInterestRegistrationResponse, ValidationError> {
     let accepted_at = accepted_at.into();
     if !is_rfc3339(&accepted_at) {
         return Err(ValidationError::InvalidConsentedAt);
     }
-    let next_step_url = match party_type {
-        PartyType::Individual => "https://user.canonical.plus/u/readiness",
-        PartyType::Organization => "https://org.canonical.plus/o/readiness",
-    };
     Ok(PreInterestRegistrationResponse {
         receipt_id,
         status: "accepted",
         accepted_at,
-        next_step_url,
+        next_step_url: QUOTE_NEXT_STEP_URL,
     })
 }
 
@@ -522,15 +666,40 @@ fn valid_domain_label(label: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-fn normalize_organization_name(value: &str) -> Result<String, ValidationError> {
+fn normalize_human_text(
+    value: &str,
+    max_chars: usize,
+    error: ValidationError,
+) -> Result<String, ValidationError> {
     if value.chars().any(char::is_control) {
-        return Err(ValidationError::InvalidOrganizationName);
+        return Err(error);
     }
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() || normalized.chars().count() > MAX_ORGANIZATION_CHARS {
-        return Err(ValidationError::InvalidOrganizationName);
+    if normalized.is_empty() || normalized.chars().count() > max_chars {
+        return Err(error);
     }
     Ok(normalized)
+}
+
+fn normalize_website_url(value: &str) -> Result<String, ValidationError> {
+    let normalized = value.trim();
+    if normalized.is_empty()
+        || normalized.len() > MAX_WEBSITE_URL_BYTES
+        || normalized.chars().any(char::is_control)
+        || normalized.chars().any(char::is_whitespace)
+    {
+        return Err(ValidationError::InvalidWebsiteUrl);
+    }
+    let parsed = Url::parse(normalized).map_err(|_| ValidationError::InvalidWebsiteUrl)?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(ValidationError::InvalidWebsiteUrl);
+    }
+    Ok(parsed.to_string())
 }
 
 fn normalize_locale(value: &str) -> Result<String, ValidationError> {
@@ -645,6 +814,14 @@ const fn party_type_name(party_type: PartyType) -> &'static str {
     }
 }
 
+const fn boolean_name(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +842,11 @@ mod tests {
             source_host: "user.canonical.plus".into(),
             locale: Some("en-US".into()),
             referral_code: Some("launch-2026".into()),
+            display_name: Some("  Person   Name  ".into()),
+            website_url: Some("https://example.com/security?source=interest".into()),
+            registration_consent: true,
+            marketing_consent: false,
+            marketing_consent_revision: None,
         }
     }
 
@@ -687,7 +869,18 @@ mod tests {
             registration.referral_code().map(SensitiveText::expose),
             Some("launch-2026")
         );
+        assert_eq!(
+            registration.display_name().map(SensitiveText::expose),
+            Some("Person Name")
+        );
+        assert_eq!(
+            registration.website_url().map(SensitiveText::expose),
+            Some("https://example.com/security?source=interest")
+        );
         assert!(registration.organization_name().is_none());
+        assert!(registration.registration_consent());
+        assert!(!registration.marketing_consent());
+        assert!(registration.marketing_consent_revision().is_none());
     }
 
     #[test]
@@ -724,6 +917,41 @@ mod tests {
     }
 
     #[test]
+    fn registration_and_marketing_consent_are_independent_and_explicit() {
+        let mut request = individual_request();
+        request.registration_consent = false;
+        assert_eq!(
+            validate_registration(request, "user.canonical.plus"),
+            Err(ValidationError::RegistrationConsentRequired)
+        );
+
+        let mut request = individual_request();
+        request.marketing_consent = true;
+        assert_eq!(
+            validate_registration(request, "user.canonical.plus"),
+            Err(ValidationError::InvalidMarketingConsentRevision)
+        );
+
+        let mut request = individual_request();
+        request.marketing_consent_revision = Some("marketing-v1".into());
+        assert_eq!(
+            validate_registration(request, "user.canonical.plus"),
+            Err(ValidationError::UnexpectedMarketingConsentRevision)
+        );
+
+        let mut request = individual_request();
+        request.marketing_consent = true;
+        request.marketing_consent_revision = Some("marketing-v1".into());
+        let registration = validate_registration(request, "user.canonical.plus")
+            .expect("valid explicit marketing consent");
+        assert!(registration.marketing_consent());
+        assert_eq!(
+            registration.marketing_consent_revision(),
+            Some("marketing-v1")
+        );
+    }
+
+    #[test]
     fn rejects_duplicate_interests_and_unsafe_metadata() {
         let mut request = individual_request();
         request.interest_areas.push(InterestArea::Soc2);
@@ -738,16 +966,30 @@ mod tests {
             validate_registration(request, "user.canonical.plus"),
             Err(ValidationError::InvalidReferralCode)
         );
+
+        let mut request = individual_request();
+        request.website_url = Some("http://example.com".into());
+        assert_eq!(
+            validate_registration(request, "user.canonical.plus"),
+            Err(ValidationError::InvalidWebsiteUrl)
+        );
     }
 
     #[test]
-    fn deserialization_rejects_unknown_and_malformed_fields() {
+    fn deserialization_rejects_unknown_and_missing_required_fields() {
         let mut value = serde_json::to_value(individual_request()).expect("serialize");
         value["notes"] = serde_json::json!("sensitive free-form text");
         assert!(serde_json::from_value::<PreInterestRegistrationRequest>(value).is_err());
 
         let mut value = serde_json::to_value(individual_request()).expect("serialize");
         value["requestId"] = serde_json::json!("person@example.com");
+        assert!(serde_json::from_value::<PreInterestRegistrationRequest>(value).is_err());
+
+        let mut value = serde_json::to_value(individual_request()).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("request object")
+            .remove("registrationConsent");
         assert!(serde_json::from_value::<PreInterestRegistrationRequest>(value).is_err());
     }
 
@@ -758,6 +1000,8 @@ mod tests {
         let debug = format!("{registration:?}");
         assert!(!debug.contains("person@example.com"));
         assert!(!debug.contains("launch-2026"));
+        assert!(!debug.contains("Person Name"));
+        assert!(!debug.contains("example.com/security"));
         assert!(debug.contains("[redacted]"));
     }
 
@@ -784,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn request_fingerprint_is_independent_of_interest_input_order() {
+    fn request_fingerprint_covers_new_consent_and_contact_fields() {
         let first = validate_registration(individual_request(), "user.canonical.plus")
             .expect("valid request");
         let mut reversed = individual_request();
@@ -796,7 +1040,16 @@ mod tests {
         );
 
         let mut changed = individual_request();
-        changed.consent_revision = "pre-interest-v2".into();
+        changed.display_name = Some("Different Person".into());
+        let changed = validate_registration(changed, "user.canonical.plus").expect("valid request");
+        assert_ne!(
+            derive_request_fingerprint(KEY_A, &first).expect("fingerprint"),
+            derive_request_fingerprint(KEY_A, &changed).expect("fingerprint")
+        );
+
+        let mut changed = individual_request();
+        changed.marketing_consent = true;
+        changed.marketing_consent_revision = Some("marketing-v1".into());
         let changed = validate_registration(changed, "user.canonical.plus").expect("valid request");
         assert_ne!(
             derive_request_fingerprint(KEY_A, &first).expect("fingerprint"),
@@ -814,10 +1067,7 @@ mod tests {
         .expect("response");
         let json = serde_json::to_value(response).expect("serialize response");
         assert_eq!(json["status"], "accepted");
-        assert_eq!(
-            json["nextStepUrl"],
-            "https://user.canonical.plus/u/readiness"
-        );
+        assert_eq!(json["nextStepUrl"], "https://user.canonical.plus/u/quote");
         assert!(json.get("created").is_none());
         assert!(json.get("duplicate").is_none());
         assert!(json.get("email").is_none());
@@ -830,6 +1080,11 @@ mod tests {
             "CREATE SCHEMA canonical_cloud__interest;",
             "email_alias bytea NOT NULL",
             "request_fingerprint bytea NOT NULL",
+            "display_name_ciphertext bytea",
+            "website_url_ciphertext bytea",
+            "registration_consent boolean NOT NULL",
+            "marketing_consent boolean NOT NULL",
+            "marketing_consent_revision text",
             "UNIQUE (request_id)",
             "canonical_pre_interest_consent_event",
             "canonical_pre_interest_outbox",
