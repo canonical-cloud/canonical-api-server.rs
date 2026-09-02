@@ -6,6 +6,8 @@ description = "Canonical readiness REST, WebSocket, and webhook API"
 license = "MIT"
 keywords = ["api", "rust", "axum", "seaorm", "readiness", "webhook"]
 language = "rust"
+role = "server"
+family = "canonical"
 
 [package.repository]
 vcs = "git"
@@ -18,7 +20,7 @@ url = "https://github.com/canonical-cloud/canonical-api-server.rs"
 "shared-auth/shared-auth-clients" = "=0.1.0"
 
 [build]
-command = "cargo build --release --bin canonical-api-server"
+command = "cargo build --release --locked --bin canonical-api-server"
 outputs = ["target/release/canonical-api-server"]
 
 [bin]
@@ -34,4 +36,7 @@ adapter = "none"
 dir = ".vendor/.zed"
 
 [scripts]
+verify_interfaces = "python3 scripts/verify_interface_contract.py"
+prebuild = "sh ./.zpkg/pre-build"
+prepublish = "sh ./.zpkg/pre-publish"
 test = "cargo fmt --all -- --check && cargo test --all-targets --all-features --locked && cargo clippy --all-targets --all-features --locked -- -D warnings"
