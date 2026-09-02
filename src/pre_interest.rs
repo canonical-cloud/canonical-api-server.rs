@@ -20,8 +20,7 @@ const MAX_LOCALE_BYTES: usize = 35;
 const MAX_REFERRAL_BYTES: usize = 64;
 const MIN_DERIVATION_KEY_BYTES: usize = 32;
 const EMAIL_ALIAS_CONTEXT: &[u8] = b"canonical.pre-interest.email-alias.v1\0";
-const REQUEST_FINGERPRINT_CONTEXT: &[u8] =
-    b"canonical.pre-interest.request-fingerprint.v1\0";
+const REQUEST_FINGERPRINT_CONTEXT: &[u8] = b"canonical.pre-interest.request-fingerprint.v1\0";
 const QUOTE_NEXT_STEP_URL: &str = "https://user.canonical.plus/u/quote";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -323,9 +322,7 @@ impl fmt::Display for ValidationError {
             Self::InvalidDisplayName => "display name is invalid",
             Self::InvalidEmail => "email is invalid",
             Self::InvalidLocale => "locale is invalid",
-            Self::InvalidMarketingConsentRevision => {
-                "marketing consent revision is invalid"
-            }
+            Self::InvalidMarketingConsentRevision => "marketing consent revision is invalid",
             Self::InvalidOrganizationName => "organization name is invalid",
             Self::InvalidReferralCode => "referral code is invalid",
             Self::InvalidSourceHost => "registration host is invalid",
@@ -555,10 +552,7 @@ pub fn derive_request_fingerprint(
     );
     update_optional(
         &mut mac,
-        registration
-            .website_url
-            .as_ref()
-            .map(SensitiveText::expose),
+        registration.website_url.as_ref().map(SensitiveText::expose),
     );
     update_field(
         &mut mac,
@@ -568,10 +562,7 @@ pub fn derive_request_fingerprint(
         &mut mac,
         boolean_name(registration.marketing_consent).as_bytes(),
     );
-    update_optional(
-        &mut mac,
-        registration.marketing_consent_revision.as_deref(),
-    );
+    update_optional(&mut mac, registration.marketing_consent_revision.as_deref());
     Ok(finish_mac(mac))
 }
 
