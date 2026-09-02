@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+sh ./.zpkg/pre-build
+cargo test --all-targets --all-features --locked
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git diff --exit-code -- .zpkg.toml .zpkg contracts/interfaces-source.lock.json scripts/verify-interface-dependency.py src/interface_contract.rs src/main.rs Cargo.toml Cargo.lock
+fi
