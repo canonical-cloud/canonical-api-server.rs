@@ -1,0 +1,20 @@
+name: ores-middleware-rollout
+
+on:
+  push:
+    branches: [feat/ores-rate-limit-audit-v2]
+
+permissions:
+  contents: write
+
+jobs:
+  rollout:
+    uses: ORESoftware/ores-middleware/.github/workflows/rust-server-rollout.yml@b6a5e72bc05c15a8a673fc1a27987154f2b460c8
+    with:
+      source: src/main.rs
+      manifest: Cargo.toml
+      middleware_revision: b6a5e72bc05c15a8a673fc1a27987154f2b460c8
+      call_name: shutdown::serve
+      router_argument: 1
+      error_mode: question
+    secrets: inherit
