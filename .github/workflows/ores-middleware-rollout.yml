@@ -9,12 +9,13 @@ permissions:
 
 jobs:
   rollout:
-    uses: ORESoftware/ores-middleware/.github/workflows/rust-server-rollout.yml@b6a5e72bc05c15a8a673fc1a27987154f2b460c8
+    uses: ORESoftware/ores-middleware/.github/workflows/rust-server-rollout.yml@ec2327b079b88ac8fe21c3a331fe414735e2e716
     with:
       source: src/main.rs
       manifest: Cargo.toml
-      middleware_revision: b6a5e72bc05c15a8a673fc1a27987154f2b460c8
+      middleware_revision: ec2327b079b88ac8fe21c3a331fe414735e2e716
       call_name: shutdown::serve
       router_argument: 1
       error_mode: question
+      rate_limit_mode: audit
     secrets: inherit
