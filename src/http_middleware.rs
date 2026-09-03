@@ -36,8 +36,8 @@ mod tests {
         for class in [
             OperationClass::AuthAttempt,
             OperationClass::AuthRecovery,
-            OperationClass::PaymentWrite,
-            OperationClass::LedgerWrite,
+            OperationClass::Mutation,
+            OperationClass::PaymentOrLedgerWrite,
         ] {
             let posture = rate_limit_posture(class);
             assert_eq!(posture.consistency, RateLimitConsistency::Strict);
