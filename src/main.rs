@@ -60,9 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = http_middleware::install(
-        build_router(state).merge(readiness::router(readiness_database)),
-    )?;
+    let app =
+        http_middleware::install(build_router(state).merge(readiness::router(readiness_database)))?;
     info!(
         address = %config.bind_address,
         database_configured,
