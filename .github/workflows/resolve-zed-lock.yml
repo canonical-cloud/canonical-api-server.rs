@@ -1,0 +1,78 @@
+name: resolve and verify Canonical Zed lock
+
+on:
+  push:
+    branches: [feat/ores-rate-limit-audit-v2]
+    paths:
+      - ".github/workflows/resolve-zed-lock.yml"
+      - ".zpkg.toml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canonical-api-zed-lock-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZED_PKG_REGISTRY: https://registry.zpkg.net
+
+jobs:
+  resolve-verify-and-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact rollout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/ores-rate-limit-audit-v2
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+      - name: Install checksum-verified Zed
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/zed.tar.gz" \
+            https://github.com/zed-pkg/zed-cli/releases/download/v0.2.3/zed-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' \
+            b8f81a8e4943cbaeb47153386819a911dcf02666a8709c5bd013e4f35b1ba1b9 \
+            "$RUNNER_TEMP/zed.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/zed.tar.gz" -C "$RUNNER_TEMP"
+          printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Resolve and materialize reviewed package coordinates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .zpkg.lock
+          zed install --install-mode copy
+          zed validate --require-lock
+          test -f .vendor/.zed/canonical-cloud/canonical-lib/Cargo.toml
+          test -f .vendor/.zed/shared-auth/shared-auth-clients/clients/rust/Cargo.toml
+          test -f .vendor/.zed/oresoftware/next-loggers/Cargo.toml
+          if grep -v '^source = "https://registry.zpkg.net"$' <(grep '^source = ' .zpkg.lock); then
+            echo 'lock contains a noncanonical registry source' >&2
+            exit 1
+          fi
+          if find .vendor/.zed -type f \( -name '.env' -o -name '.env.*' \) -print -quit | grep -q .; then
+            echo 'materialized package contains a forbidden environment file' >&2
+            exit 1
+          fi
+          find .vendor/.zed -type f -name Cargo.toml -print | sort
+      - name: Commit only the immutable lock and remove this one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/resolve-zed-lock.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .zpkg.lock
+          git rm "$workflow"
+          git diff --cached --check
+          if git diff --cached | grep -Eq 'ghp_|lin_api_|github_pat_'; then
+            echo 'credential-shaped material entered the staged diff' >&2
+            exit 1
+          fi
+          git commit -m 'build: lock Canonical dependencies through zed-pkg'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
