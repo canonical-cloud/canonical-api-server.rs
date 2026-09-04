@@ -2,7 +2,7 @@
 
 mod contract;
 mod gemini;
-mod persistence;
+use canonical_orm_core::quotes as persistence;
 pub mod web_data_plane;
 mod webhook;
 
@@ -24,10 +24,10 @@ use canonical_lib::interfaces::{
     QuoteDetail, QuoteListQuery, QuoteListResponse, QuoteProblem, QuoteRetryResponse,
     QuoteSubmissionResponse,
 };
+use canonical_orm_core::QuoteStore;
 use futures_util::StreamExt;
-use sea_orm::DatabaseConnection;
 use serde::Serialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::Value as JsonValue;
 use shared_auth_client::SharedAuthClient;
 use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, RwLock, Semaphore};
@@ -38,7 +38,9 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, warn};
 use uuid::Uuid;
 
-pub(crate) use contract::AcceptedQuoteRequest;
+pub use canonical_lib::quotes::{
+    AcceptedQuoteRequest, CanonicalContext, QuoteEventRecord, QuoteRecord,
+};
 use contract::{
     now_rfc3339, parse_quote_request, quote_detail, quote_list_response, quote_retry_response,
     quote_status_event, quote_submission_response,
@@ -51,7 +53,6 @@ const INTERNAL_TOKEN_HEADER: &str = "x-canonical-internal-token";
 const SUBJECT_HEADER: &str = "x-canonical-subject";
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
-const MAX_CONTEXT_RECORD_BYTES: usize = 262_144;
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 pub const SHARED_AUTH_MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const SCOPE_QUOTES_READ: &str = "quotes:read";
@@ -236,7 +237,7 @@ fn is_valid_model_name(value: &str) -> bool {
 #[derive(Clone)]
 pub struct AppState {
     admission: QuoteAdmission,
-    database: Option<DatabaseConnection>,
+    database: Option<QuoteStore>,
     events: broadcast::Sender<QuoteEventRecord>,
     gemini: Option<GeminiClient>,
     gemini_model: Arc<str>,
@@ -253,7 +254,7 @@ impl AppState {
     pub fn new(
         internal_auth_token: impl Into<Arc<str>>,
         gemini_model: impl Into<Arc<str>>,
-        database: Option<DatabaseConnection>,
+        database: Option<QuoteStore>,
     ) -> Self {
         let (events, _) = broadcast::channel(256);
         Self {
@@ -1138,65 +1139,6 @@ fn memory_event(state: &AppState, record: &QuoteRecord) -> Result<QuoteEventReco
         status: record.status.clone(),
         occurred_at: record.updated_at.clone(),
     })
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct CanonicalContext {
-    pub context_json: JsonValue,
-    pub context_markdown: String,
-    pub id: Uuid,
-    pub name: String,
-}
-
-impl CanonicalContext {
-    fn request_only() -> Self {
-        Self {
-            context_json: json!({}),
-            context_markdown: String::new(),
-            id: Uuid::nil(),
-            name: "request-only context".into(),
-        }
-    }
-
-    pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        if self.name.is_empty() || self.name.len() > 200 {
-            return Err("canonical_context.name is invalid");
-        }
-        if self.context_markdown.len() > MAX_CONTEXT_RECORD_BYTES {
-            return Err("canonical_context.context_markdown is too large");
-        }
-        let json_size = serde_json::to_vec(&self.context_json)
-            .map_err(|_| "canonical_context.context_json is invalid")?
-            .len();
-        if json_size > MAX_CONTEXT_RECORD_BYTES {
-            return Err("canonical_context.context_json is too large");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct QuoteRecord {
-    pub analysis: Option<JsonValue>,
-    pub context_record_id: Uuid,
-    pub error_code: Option<String>,
-    pub gemini_model: String,
-    pub owner_subject: String,
-    pub persistence: String,
-    pub quote_id: Uuid,
-    pub request: canonical_lib::interfaces::QuoteRequest,
-    pub status: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct QuoteEventRecord {
-    pub owner_subject: String,
-    pub quote_id: Uuid,
-    pub sequence: u64,
-    pub status: String,
-    pub occurred_at: String,
 }
 
 #[derive(Serialize)]

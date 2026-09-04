@@ -9,7 +9,7 @@ use std::{io, time::Duration};
 use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
-use sea_orm::Database;
+use canonical_orm_core::QuoteStore;
 use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env()?;
     let database = match config.database_url.as_deref() {
-        Some(url) => Some(Database::connect(url).await?),
+        Some(url) => Some(QuoteStore::connect(url).await?),
         None => None,
     };
     let readiness_database = database.clone();
