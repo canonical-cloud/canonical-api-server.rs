@@ -370,7 +370,7 @@ dependencies = [
 [[package]]
 name = "canonical-orm-core"
 version = "0.1.0"
-source = "git+https://github.com/canonical-cloud/canonical-orm-core?rev=cadf545a18c807f663574a0b2eb93355f8561c32#cadf545a18c807f663574a0b2eb93355f8561c32"
+source = "git+https://github.com/canonical-cloud/canonical-orm-core?rev=a3e4e022977aa9f35bc4aac0815729b41d63e8ba#a3e4e022977aa9f35bc4aac0815729b41d63e8ba"
 dependencies = [
  "async-trait",
  "canonical-interfaces",
