@@ -4,6 +4,7 @@ mod contract;
 mod frameworks;
 mod gemini;
 mod persistence;
+pub mod web_data_plane;
 mod webhook;
 
 use std::collections::{HashMap, VecDeque};
@@ -53,6 +54,11 @@ const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
 const MAX_CONTEXT_RECORD_BYTES: usize = 262_144;
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+pub const SHARED_AUTH_MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const SCOPE_QUOTES_READ: &str = "quotes:read";
+const SCOPE_QUOTES_WRITE: &str = "quotes:write";
+const SCOPE_READINESS_READ: &str = "readiness:read";
+const SCOPE_READINESS_WRITE: &str = "readiness:write";
 const QUOTE_ANALYSIS_MAX_CONCURRENCY: usize = 4;
 const QUOTE_SUBMISSIONS_PER_WINDOW: usize = 5;
 const QUOTE_SUBMISSIONS_GLOBAL_PER_WINDOW: usize = 500;
@@ -125,7 +131,7 @@ impl Config {
         };
         let shared_auth_audience =
             env::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "canonical-plus-api".into());
-        if !ores_lib_core::valid_correlation_id(&shared_auth_audience) {
+        if !valid_shared_auth_identifier(&shared_auth_audience) {
             return Err(ConfigError::InvalidSharedAuthAudience);
         }
 
@@ -519,7 +525,7 @@ async fn create_quote(
     headers: HeaderMap,
     Json(payload): Json<JsonValue>,
 ) -> Result<(StatusCode, Json<QuoteSubmissionResponse>), ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_QUOTES_WRITE]).await?;
     let idempotency_key = required_idempotency_key(&headers)?;
     let request = parse_quote_request(payload)?;
     let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
@@ -632,7 +638,7 @@ async fn retry_quote(
     Path(quote_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<QuoteRetryResponse>), ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_QUOTES_WRITE]).await?;
     let idempotency_key = required_idempotency_key(&headers)?;
     let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
         ApiError::service_unavailable(
@@ -888,7 +894,7 @@ async fn list_quotes(
     headers: HeaderMap,
     Query(query): Query<QuoteListQuery>,
 ) -> Result<Json<QuoteListResponse>, ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_QUOTES_READ]).await?;
     let limit = usize::try_from(query.limit.unwrap_or(25).clamp(1, 100)).unwrap_or(25);
     let cursor = query
         .cursor
@@ -936,7 +942,7 @@ async fn get_quote(
     Path(quote_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Json<QuoteDetail>, ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_QUOTES_READ]).await?;
     let record = find_quote(&state, quote_id, &subject).await?;
     Ok(Json(quote_detail(&record)?))
 }
@@ -968,7 +974,7 @@ async fn quote_events(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_QUOTES_READ]).await?;
     let record = find_quote(&state, quote_id, &subject).await?;
     let socket_permit = state.admission.reserve_websocket().map_err(|_| {
         ApiError::service_unavailable(
@@ -1079,7 +1085,7 @@ async fn create_readiness_assessment(
     headers: HeaderMap,
     Json(payload): Json<JsonValue>,
 ) -> Result<(StatusCode, Json<AssessmentRecord>), ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_READINESS_WRITE]).await?;
     let idempotency_key = required_idempotency_key(&headers)?;
     let submission = frameworks::parse_assessment_request(payload)?;
     state
@@ -1174,7 +1180,7 @@ async fn list_readiness_assessments(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<AssessmentListResponse>, ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_READINESS_READ]).await?;
     let assessments = state
         .assessments
         .lock()
@@ -1192,7 +1198,7 @@ async fn get_readiness_assessment(
     Path(assessment_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Json<AssessmentRecord>, ApiError> {
-    let subject = authenticate(&headers, &state).await?;
+    let subject = authenticate(&headers, &state, &[SCOPE_READINESS_READ]).await?;
     Ok(Json(find_assessment(&state, assessment_id, &subject)?))
 }
 
@@ -1221,13 +1227,17 @@ fn publish_assessment_event(state: &AppState, event: AssessmentEventRecord) {
     }
 }
 
-async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError> {
+async fn authenticate(
+    headers: &HeaderMap,
+    state: &AppState,
+    required_scopes: &[&str],
+) -> Result<String, ApiError> {
     let supplied_token = headers
         .get(INTERNAL_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok());
     let supplied_subject = headers.get(SUBJECT_HEADER);
     if supplied_token.is_none() && supplied_subject.is_none() {
-        return authenticate_bearer(headers, state).await;
+        return authenticate_bearer(headers, state, required_scopes).await;
     }
     let token_is_valid = supplied_token
         .map(|token| bool::from(token.as_bytes().ct_eq(state.internal_auth_token.as_bytes())))
@@ -1249,7 +1259,11 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<String, A
     Ok(subject.to_owned())
 }
 
-async fn authenticate_bearer(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError> {
+async fn authenticate_bearer(
+    headers: &HeaderMap,
+    state: &AppState,
+    required_scopes: &[&str],
+) -> Result<String, ApiError> {
     let bearer = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -1260,7 +1274,7 @@ async fn authenticate_bearer(headers: &HeaderMap, state: &AppState) -> Result<St
     let authority = state.shared_auth.as_ref().ok_or_else(unauthorized)?;
     let introspection = authority
         .client
-        .introspect_for_audience(bearer, &authority.audience)
+        .introspect_with_requirements(bearer, &authority.audience, required_scopes)
         .await
         .map_err(|_| unauthorized())?;
     if !introspection.active {
@@ -1284,6 +1298,14 @@ fn valid_subject(value: &str) -> Option<&str> {
     .then_some(value)
 }
 
+fn valid_shared_auth_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
+}
+
 fn unauthorized() -> ApiError {
     ApiError::unauthorized("unauthorized", "authentication failed")
 }
@@ -1293,7 +1315,7 @@ fn required_idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
         .get(IDEMPOTENCY_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .filter(|value| ores_lib_core::valid_correlation_id(value))
+        .filter(|value| valid_idempotency_key(value))
         .ok_or_else(|| {
             ApiError::bad_request(
                 "invalid_request",
@@ -1301,6 +1323,13 @@ fn required_idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
             )
         })?;
     Ok(value.to_owned())
+}
+
+fn valid_idempotency_key(value: &str) -> bool {
+    (8..=128).contains(&value.len())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
 }
 
 fn memory_event(state: &AppState, record: &QuoteRecord) -> Result<QuoteEventRecord, ApiError> {
@@ -1546,7 +1575,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
-    use shared_auth_client::SharedAuthClient;
+    use shared_auth_client::{ClientError, SharedAuthClient};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tower::ServiceExt;
@@ -1643,9 +1672,17 @@ mod tests {
             let lowercase = request.to_ascii_lowercase();
             assert!(lowercase.starts_with("post /auth/introspect http/1.1"));
             assert!(lowercase.contains("authorization: bearer introspection-service-secret"));
-            assert!(request.contains("canonical-plus-api"));
-            assert!(request.contains("customer-access-token"));
-            let body = r#"{"active":true,"sub":"shared-auth:user-123"}"#;
+            let (_, request_body) = request.split_once("\r\n\r\n").unwrap();
+            let request_body: Value = serde_json::from_str(request_body).unwrap();
+            assert_eq!(request_body["contract"], "IntrospectionRequest");
+            assert_eq!(request_body["payload"]["token"], "customer-access-token");
+            assert_eq!(request_body["payload"]["audience"], "canonical-plus-api");
+            assert_eq!(
+                request_body["payload"]["requiredScopes"],
+                json!(["quotes:write"])
+            );
+            assert!(request_body.get("token").is_none());
+            let body = r#"{"active":true,"sub":"shared-auth:user-123","futureEnvelopeField":{"version":2}}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
@@ -1675,6 +1712,20 @@ mod tests {
             .unwrap();
         authority.await.unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn introspection_service_auth_is_checked_before_token_constraints() {
+        let client = SharedAuthClient::try_new("http://127.0.0.1:9").unwrap();
+        let error = client
+            .introspect_with_requirements(
+                "invalid token with spaces",
+                "invalid audience?",
+                &["duplicate", "duplicate"],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ClientError::MissingServiceCredential));
     }
 
     #[tokio::test]

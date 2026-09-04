@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "canonical_lib": {
-    "repository": "canonical-cloud/canonical-lib",
-    "commit": "8986ab23a18ca0ef14422f6348b264acbb9acc43"
+    "repository": "canonical-cloud/canonical-lib-core",
+    "commit": "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"
   },
   "canonical_interfaces": {
     "repository": "canonical-cloud/canonical-interfaces",
