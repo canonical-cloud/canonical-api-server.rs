@@ -36,11 +36,7 @@ const REQUEST_FIELDS: &[&str] = &[
     "answersVersion",
 ];
 
-#[derive(Clone, Debug)]
-pub(crate) struct AcceptedQuoteRequest {
-    pub application_markdown: String,
-    pub wire: QuoteRequest,
-}
+use canonical_lib::quotes::AcceptedQuoteRequest;
 
 pub(crate) fn parse_quote_request(payload: JsonValue) -> Result<AcceptedQuoteRequest, ApiError> {
     let object = payload.as_object().ok_or_else(|| {

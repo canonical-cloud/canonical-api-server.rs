@@ -15,12 +15,13 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
-canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "c636c08c7ed16255711752c55ed1ae3d7c2db434" }
+canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "a3e4e022977aa9f35bc4aac0815729b41d63e8ba", features = ["read-write"] }
+canonical-interfaces = { git = "https://github.com/canonical-cloud/canonical-interfaces", rev = "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef" }
 futures-util = "0.3.32"
 hmac = "0.12.1"
 next-loggers = { git = "https://github.com/ores-otel/ores.otel.log", rev = "ca176fb6768a9750d262a536952268625ffd3a8a", package = "oresoftware-next-loggers" }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
-sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
 sha2 = "0.10.9"

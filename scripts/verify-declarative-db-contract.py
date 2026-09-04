@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +24,15 @@ manifest = json.loads((ROOT / "db/namespace.json").read_text())
 schema = (ROOT / "db/schema.sql").read_text()
 bootstrap = (ROOT / "db/bootstrap.sql").read_text()
 grants = (ROOT / "db/grants.sql").read_text()
-persistence = (ROOT / "src/persistence.rs").read_text()
-readiness = (ROOT / "src/readiness.rs").read_text()
+metadata = json.loads(subprocess.check_output(
+    ["cargo", "metadata", "--locked", "--format-version", "1"], cwd=ROOT, text=True
+))
+orm_packages = [p for p in metadata["packages"] if p["name"] == "canonical-orm-core"]
+if len(orm_packages) != 1:
+    fail("exactly one locked canonical-orm-core package is required")
+orm_root = Path(orm_packages[0]["manifest_path"]).parent
+persistence = (orm_root / "src/quotes.rs").read_text()
+readiness = (ROOT / "src/readiness.rs").read_text() + (orm_root / "sql/quote-readiness.sql").read_text()
 main = (ROOT / "src/main.rs").read_text()
 
 if manifest["namespaceId"] != NAMESPACE:
