@@ -26,19 +26,30 @@ The application-level Markdown policy is compiled from
 any supplied value is ignored. Customer-specific facts still come from the
 normalized intake fields and the owner-scoped `canonical_context` row.
 
-1. `POST /v1/quotes` validates and normalizes a bounded request for SOC 2,
-   HIPAA, NIST CSF, NIST 800-53, ISO 27001, PCI DSS, FedRAMP, or GDPR.
-2. PostgreSQL selects the authenticated owner's single active
-   `canonical_context` row. A partial unique index makes that selection
-   unambiguous; browser input cannot choose a context UUID.
-3. The API stores immutable snapshots of the application Markdown, selected
-   database context, and normalized request before starting analysis.
-4. Gemini receives those three bounded inputs under explicit untrusted-data
-   delimiters and returns schema-constrained JSON.
-5. Durable quote state and append-only events transition from `queued` to
-   `analyzing`, then `completed` or `failed`.
-6. REST lookup and the WebSocket stream are owner scoped. WebSocket broadcasts
-   are hints; a restarted process recovers the current quote from PostgreSQL.
+1. The web BFF resolves the caller's verified email and phone from Shared Auth.
+   `POST /v1/quote-contact-selections` requires explicit confirmation of both
+   and stores them in authenticated-encryption envelopes. Raw browser contact
+   values are never verification authority.
+2. `POST /v1/quotes` validates the canonical lower-camel-case questionnaire and
+   atomically consumes the short-lived, owner-bound contact selection.
+3. The same PostgreSQL transaction stores immutable revision 1, the selected
+   owner context snapshot, an append-only queued event, a durable analysis job,
+   a revocable 256-bit access capability expiring in 25 days, and a deduplicated
+   SMS outbox row before returning `202`.
+4. A separately credentialed worker leases jobs with `FOR UPDATE SKIP LOCKED`.
+   Closing the browser or restarting either process does not lose accepted work;
+   an expired lease is reclaimed automatically.
+5. Gemini receives bounded request and context inputs under explicit
+   untrusted-data delimiters and returns schema-constrained JSON. Durable state
+   transitions from `queued` to `analyzing`, then `ready` or `failed`.
+6. The notification worker decrypts a destination and capability only in memory
+   and sends the permalink through Twilio Messaging. Shared Auth continues to
+   use Twilio Verify exclusively for OTPs.
+7. `POST /v1/quotes/{quote_id}/submissions` appends revision `n + 1` after the
+   current revision reaches a terminal state. Earlier inputs and results are not
+   mutated. The same quote link remains scoped to that stable quote.
+8. REST lookup and WebSocket streams are owner scoped. Broadcasts are hints;
+   PostgreSQL remains authoritative after reconnect or restart.
 
 The default model is `gemini-3.1-pro-preview` and remains configurable through
 `GEMINI_MODEL`. Requests use the Google API-key header, a fixed Google API
@@ -54,9 +65,12 @@ certification, audit opinion, legal opinion, or guarantee of attestation.
 | Route | Purpose |
 | --- | --- |
 | `GET /healthz` | Liveness plus non-secret DB/Gemini configuration state |
-| `POST /v1/quotes` | Validate, persist, and asynchronously analyze a quote |
+| `POST /v1/quote-contact-selections` | Confirm the BFF-asserted verified email and phone and mint a 15-minute selection |
+| `POST /v1/quotes` | Validate, durably enqueue, and return without waiting for analysis |
 | `GET /v1/quotes/{quote_id}` | Owner-scoped durable quote status/result |
+| `POST /v1/quotes/{quote_id}/submissions` | Append and enqueue an edited immutable revision |
 | `GET /v1/quotes/{quote_id}/events` | Owner-scoped WebSocket status stream |
+| `POST /v1/quote-links/redeem` | Internal BFF-only capability exchange used by `/q/{capability}` |
 
 All quote routes require both:
 
@@ -64,6 +78,11 @@ All quote routes require both:
   bytes, compared in constant time;
 - `x-canonical-subject`: the Shared Auth subject projected only by the trusted
   Canonical web tier.
+
+Contact-selection calls additionally require `x-canonical-verified-email` and
+`x-canonical-verified-phone`. The BFF sets these only from the protected Shared
+Auth verified-contact response. All four headers are marked sensitive in HTTP
+middleware and must be stripped from public ingress requests.
 
 Cloudflare and the ingress must remove client-supplied `x-canonical-*` and
 `x-auth-*` headers. The API should not be routed directly to an unrestricted
@@ -75,8 +94,13 @@ Apply [`db/schema.sql`](db/schema.sql) through the migration identity, not the
 runtime service login. The schema provides:
 
 - `canonical_context`, with at most one active row per owner;
-- `canonical_quote` with immutable input snapshots and the structured result;
-- append-only `canonical_quote_event`;
+- encrypted, explicit-use `canonical_quote_contact_selection` rows;
+- stable `canonical_quote` headers and immutable `canonical_quote_revision`
+  inputs, context snapshots, and results;
+- append-only, revision-scoped `canonical_quote_event` rows;
+- recoverable leased work in `canonical_quote_job`;
+- hashed and encrypted capabilities in `canonical_quote_access_link`;
+- deduplicated product messages in `canonical_notification_outbox`;
 - provider metadata in `canonical_model_attempt`;
 - forced row-level security based on the transaction-local
   `app.current_subject`.
@@ -87,8 +111,15 @@ subject inside the same transaction and still includes an explicit owner
 predicate.
 
 `DATABASE_URL` is optional only for local routing tests. Without it, quote state
-is labelled `memory-only` and restart recovery is unavailable. Production must
-configure PostgreSQL.
+is labelled `memory-only` and restart recovery and link redemption are
+unavailable. Production must also configure `QUOTE_WORKER_DATABASE_URL` with the
+distinct `canonical_quote_worker` login. If the worker is absent, submissions
+remain safely queued; the HTTP process does not fall back to process-local work.
+
+`QUOTE_DATA_ENCRYPTION_KEY` is required with PostgreSQL and must decode from
+unpadded base64url to exactly 32 random bytes. It encrypts contact destinations
+and the plaintext copy of the access capability used by the SMS worker. The
+database lookup value is a SHA-256 digest; neither plaintext value is logged.
 
 ## Gemini
 
@@ -143,6 +174,10 @@ than a mutable tag.
   reviewed schema;
 - inject the Gemini key and internal service token from the cluster secret
   store;
+- inject the quote encryption key and Twilio Messaging credentials, configure
+  the HTTPS `QUOTE_LINK_BASE_URL`, and deploy the distinct worker database
+  identity;
 - deploy behind the Canonical Shared Auth introspection boundary;
-- certify owner isolation, revocation, provider failure, restart recovery, and
-  WebSocket reconnect behavior in the Kubernetes staging environment.
+- certify owner isolation, OTP/contact assertion handling, 25-day expiry,
+  capability revocation, outbox deduplication, provider failure, lease recovery,
+  edit/resubmit history, and WebSocket reconnect behavior in staging.
