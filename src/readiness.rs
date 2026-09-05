@@ -385,7 +385,24 @@ fn not_ready(code: &'static str, message: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::READINESS_SQL;
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    use super::{router, READINESS_SQL};
+
+    #[tokio::test]
+    async fn ready_route_fails_closed_without_database() {
+        let response = router(None, Arc::new(AtomicBool::new(true)))
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 
     #[test]
     fn readiness_contract_names_every_security_boundary() {

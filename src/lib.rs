@@ -1373,7 +1373,9 @@ mod tests {
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
     fn app() -> axum::Router {
-        build_router(AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None))
+        let state = AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None);
+        state.mark_started();
+        build_router(state)
     }
 
     fn request(payload: Value, key: &str) -> Request<Body> {
@@ -1386,6 +1388,21 @@ mod tests {
             .header("idempotency-key", key)
             .body(Body::from(payload.to_string()))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn lifecycle_routes_are_public_and_bounded() {
+        for path in ["/livez", "/healthz", "/startupz", "/version", "/metrics"] {
+            let response = app()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert!(
+                matches!(response.status(), StatusCode::OK | StatusCode::NO_CONTENT),
+                "{path} returned {}",
+                response.status()
+            );
+        }
     }
 
     #[test]
