@@ -166,7 +166,7 @@ for required in (
 ):
     if required not in readiness:
         fail(f"readiness contract omits {required}")
-if "merge(readiness::router(readiness_database))" not in main:
+if "merge(readiness::router(readiness_database, accepting.clone()))" not in main:
     fail("binary does not serve the fail-closed readiness router")
 
 workflow = (ROOT / ".github/workflows/declarative-postgres.yml").read_text()
