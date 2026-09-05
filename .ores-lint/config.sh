@@ -11,6 +11,10 @@
 
 : "${ORES_LINT_SKIP_RUST:=0}"
 : "${ORES_LINT_SKIP_JS:=0}"
+: "${ORES_LINT_SKIP_DART:=0}"
+: "${ORES_LINT_SKIP_GLEAM:=0}"
+: "${ORES_LINT_SKIP_REQUIRE_SEND:=0}"
+: "${ORES_LINT_REQUIRE_SEND_INCLUDE_TESTS:=0}"
 
 # How deep to search for nested sub-projects (crates and packages). Repos here
 # routinely hold crates under apps/ and clients/ that a root-only lint misses.
@@ -31,6 +35,8 @@
 : "${ORES_LINT_IMPLICIT_RETURN_MSG:=missing \`return\` statement}"
 
 export ORES_LINT_MAX_EXAMPLES ORES_LINT_STRICT ORES_LINT_SKIP_RUST ORES_LINT_SKIP_JS
+export ORES_LINT_SKIP_DART ORES_LINT_SKIP_GLEAM ORES_LINT_SKIP_REQUIRE_SEND
+export ORES_LINT_REQUIRE_SEND_INCLUDE_TESTS
 export ORES_LINT_DEPTH ORES_LINT_RUST_ALL_TARGETS ORES_LINT_ESLINT_MIN_MAJOR
 export ORES_LINT_IMPLICIT_RETURN_MSG
 
