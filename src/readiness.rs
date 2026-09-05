@@ -1,3 +1,8 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -299,12 +304,18 @@ struct NotReadyResponse {
     message: &'static str,
 }
 
-pub fn router(database: Option<DatabaseConnection>) -> Router {
+pub fn router(database: Option<DatabaseConnection>, accepting: Arc<AtomicBool>) -> Router {
     Router::new().route(
         "/readyz",
         get(move || {
             let database = database.clone();
-            async move { readiness(database).await }
+            let accepting = accepting.clone();
+            async move {
+                if !accepting.load(Ordering::Acquire) {
+                    return not_ready("server_draining", "the server is draining");
+                }
+                readiness(database).await
+            }
         }),
     )
 }

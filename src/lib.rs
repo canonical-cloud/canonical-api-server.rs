@@ -9,7 +9,7 @@ mod webhook;
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -235,6 +235,8 @@ fn is_valid_model_name(value: &str) -> bool {
 
 #[derive(Clone)]
 pub struct AppState {
+    started: Arc<AtomicBool>,
+    accepting: Arc<AtomicBool>,
     admission: QuoteAdmission,
     database: Option<DatabaseConnection>,
     events: broadcast::Sender<QuoteEventRecord>,
@@ -257,6 +259,8 @@ impl AppState {
     ) -> Self {
         let (events, _) = broadcast::channel(256);
         Self {
+            started: Arc::new(AtomicBool::new(false)),
+            accepting: Arc::new(AtomicBool::new(false)),
             admission: QuoteAdmission::default(),
             database,
             events,
@@ -269,6 +273,16 @@ impl AppState {
             shared_auth: None,
             webhook: None,
         }
+    }
+
+    pub fn mark_started(&self) {
+        self.started.store(true, Ordering::Release);
+        self.accepting.store(true, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn accepting_handle(&self) -> Arc<AtomicBool> {
+        self.accepting.clone()
     }
 
     #[must_use]
@@ -418,7 +432,11 @@ enum MemoryOperation {
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     Router::new()
+        .route("/livez", get(health))
         .route("/healthz", get(health))
+        .route("/startupz", get(startup))
+        .route("/version", get(version))
+        .route("/metrics", get(metrics))
         .route("/api/v1/quotes", get(list_quotes).post(create_quote))
         .route("/api/v1/quotes/{quote_id}", get(get_quote))
         .route("/api/v1/quotes/{quote_id}/retry", post(retry_quote))
@@ -478,6 +496,22 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         version: env!("CARGO_PKG_VERSION"),
         webhook_configured: state.webhook.is_some(),
     })
+}
+
+async fn startup(State(state): State<AppState>) -> StatusCode {
+    if state.started.load(Ordering::Acquire) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+async fn version() -> &'static str {
+    concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"), "\n")
+}
+
+async fn metrics() -> &'static str {
+    "canonical_api_server_info{service=\"canonical-api-server\"} 1\n"
 }
 
 async fn create_quote(
