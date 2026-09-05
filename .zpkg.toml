@@ -12,6 +12,8 @@ vcs = "git"
 url = "https://github.com/canonical-cloud/canonical-api-server.rs"
 
 [dependencies]
+"canonical-cloud/canonical-orm-core" = "^0.1.0"
+"canonical-cloud/canonical-lib-core" = "^0.1.0"
 "canonical-cloud/canonical-interfaces" = "^0.1.0"
 "canonical-cloud/canonical-lib-core" = "^0.1.0"
 "oresoftware/next-loggers" = "=0.1.0"

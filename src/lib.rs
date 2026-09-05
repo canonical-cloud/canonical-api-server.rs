@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod contract;
+mod frameworks;
 mod gemini;
 mod persistence;
 pub mod web_data_plane;
@@ -56,12 +57,15 @@ const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 pub const SHARED_AUTH_MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const SCOPE_QUOTES_READ: &str = "quotes:read";
 const SCOPE_QUOTES_WRITE: &str = "quotes:write";
+const SCOPE_READINESS_READ: &str = "readiness:read";
+const SCOPE_READINESS_WRITE: &str = "readiness:write";
 const QUOTE_ANALYSIS_MAX_CONCURRENCY: usize = 4;
 const QUOTE_SUBMISSIONS_PER_WINDOW: usize = 5;
 const QUOTE_SUBMISSIONS_GLOBAL_PER_WINDOW: usize = 500;
 const QUOTE_SUBMISSION_WINDOW: Duration = Duration::from_secs(10 * 60);
 const QUOTE_SUBMISSION_MAX_SUBJECTS: usize = 4_096;
 const WEBSOCKET_MAX_CONNECTIONS: usize = 1_024;
+const READINESS_ASSESSMENT_CAPACITY: usize = 1_024;
 const APPLICATION_CONTEXT_MARKDOWN: &str = include_str!("../context/quote-analysis.md");
 
 #[derive(Clone)]
@@ -236,6 +240,7 @@ fn is_valid_model_name(value: &str) -> bool {
 #[derive(Clone)]
 pub struct AppState {
     admission: QuoteAdmission,
+    assessments: Arc<Mutex<VecDeque<AssessmentRecord>>>,
     database: Option<DatabaseConnection>,
     events: broadcast::Sender<QuoteEventRecord>,
     gemini: Option<GeminiClient>,
@@ -258,6 +263,7 @@ impl AppState {
         let (events, _) = broadcast::channel(256);
         Self {
             admission: QuoteAdmission::default(),
+            assessments: Arc::new(Mutex::new(VecDeque::new())),
             database,
             events,
             gemini: None,
@@ -406,6 +412,10 @@ fn retry_after_seconds(earliest: Instant, now: Instant) -> u64 {
 
 #[derive(Clone, Debug)]
 enum MemoryOperation {
+    Assessment {
+        assessment_id: Uuid,
+        request_json: JsonValue,
+    },
     Create {
         quote_id: Uuid,
         request_json: JsonValue,
@@ -423,10 +433,39 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/quotes/{quote_id}", get(get_quote))
         .route("/api/v1/quotes/{quote_id}/retry", post(retry_quote))
         .route("/api/v1/quotes/{quote_id}/events", get(quote_events))
+        .route(
+            "/api/v1/readiness/frameworks",
+            get(list_readiness_frameworks),
+        )
+        .route(
+            "/api/v1/readiness/frameworks/{framework_id}",
+            get(get_readiness_framework),
+        )
+        .route(
+            "/api/v1/readiness/assessments",
+            get(list_readiness_assessments).post(create_readiness_assessment),
+        )
+        .route(
+            "/api/v1/readiness/assessments/{assessment_id}",
+            get(get_readiness_assessment),
+        )
         .route("/v1/quotes", get(list_quotes).post(create_quote))
         .route("/v1/quotes/{quote_id}", get(get_quote))
         .route("/v1/quotes/{quote_id}/retry", post(retry_quote))
         .route("/v1/quotes/{quote_id}/events", get(quote_events))
+        .route("/v1/readiness/frameworks", get(list_readiness_frameworks))
+        .route(
+            "/v1/readiness/frameworks/{framework_id}",
+            get(get_readiness_framework),
+        )
+        .route(
+            "/v1/readiness/assessments",
+            get(list_readiness_assessments).post(create_readiness_assessment),
+        )
+        .route(
+            "/v1/readiness/assessments/{assessment_id}",
+            get(get_readiness_assessment),
+        )
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::map_response(security_headers))
@@ -472,6 +511,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         database_configured: state.database.is_some(),
         gemini_configured: state.gemini.is_some(),
         gemini_model: state.gemini_model.to_string(),
+        readiness_frameworks: frameworks::CATALOG.len(),
         service: "canonical-api-server",
         shared_auth_configured: state.shared_auth.is_some(),
         status: "ok",
@@ -1025,6 +1065,168 @@ async fn send_json<T: Serialize>(socket: &mut WebSocket, value: &T) -> Result<()
         .map_err(|_| ())
 }
 
+async fn list_readiness_frameworks() -> Json<FrameworkCatalogResponse> {
+    Json(FrameworkCatalogResponse {
+        boundary: frameworks::READINESS_BOUNDARY,
+        frameworks: frameworks::CATALOG,
+    })
+}
+
+async fn get_readiness_framework(
+    Path(framework_id): Path<String>,
+) -> Result<Json<&'static frameworks::FrameworkDescriptor>, ApiError> {
+    frameworks::find(&framework_id)
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("not_found", "readiness framework was not found"))
+}
+
+async fn create_readiness_assessment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<JsonValue>,
+) -> Result<(StatusCode, Json<AssessmentRecord>), ApiError> {
+    let subject = authenticate(&headers, &state, &[SCOPE_READINESS_WRITE]).await?;
+    let idempotency_key = required_idempotency_key(&headers)?;
+    let submission = frameworks::parse_assessment_request(payload)?;
+    state
+        .admission
+        .check_submission(&subject)
+        .map_err(ApiError::rate_limited)?;
+
+    let key = (subject.clone(), idempotency_key);
+    let request_json = json!({
+        "frameworkIds": &submission.framework_ids,
+        "notes": &submission.notes,
+        "organization": &submission.organization,
+    });
+    // Unlike the quote paths, the check and the insert happen under one write
+    // guard so two concurrent first-time submissions of the same key cannot
+    // both create a record. No await happens while the guard is held.
+    let mut operations = state.idempotency.write().await;
+    if let Some(operation) = operations.get(&key) {
+        return match operation {
+            MemoryOperation::Assessment {
+                assessment_id,
+                request_json: existing,
+            } if *existing == request_json => {
+                let record = find_assessment(&state, *assessment_id, &subject).map_err(|_| {
+                    ApiError::service_unavailable(
+                        "storage_unavailable",
+                        "readiness assessment storage is temporarily unavailable",
+                    )
+                })?;
+                Ok((StatusCode::CREATED, Json(record)))
+            }
+            _ => Err(idempotency_reused()),
+        };
+    }
+
+    let received_at = now_rfc3339()?;
+    let record = AssessmentRecord {
+        framework_ids: submission.framework_ids,
+        id: Uuid::new_v4(),
+        idempotency_key: key.1.clone(),
+        notes: submission.notes,
+        organization: submission.organization,
+        received_at,
+        status: "received".into(),
+        subject,
+    };
+    operations.insert(
+        key,
+        MemoryOperation::Assessment {
+            assessment_id: record.id,
+            request_json,
+        },
+    );
+    {
+        let mut assessments = state
+            .assessments
+            .lock()
+            .expect("readiness assessment mutex must not be poisoned");
+        if assessments.len() >= READINESS_ASSESSMENT_CAPACITY {
+            if let Some(evicted) = assessments.pop_front() {
+                // Drop the evicted intake's operation entry so its key does
+                // not point at a record that no longer exists. Quote entries
+                // are never touched here.
+                let evicted_id = evicted.id;
+                let evicted_key = (evicted.subject, evicted.idempotency_key);
+                if matches!(
+                    operations.get(&evicted_key),
+                    Some(MemoryOperation::Assessment { assessment_id, .. })
+                        if *assessment_id == evicted_id
+                ) {
+                    operations.remove(&evicted_key);
+                }
+            }
+        }
+        assessments.push_back(record.clone());
+    }
+    drop(operations);
+    publish_assessment_event(
+        &state,
+        AssessmentEventRecord {
+            assessment_id: record.id,
+            framework_ids: record.framework_ids.clone(),
+            occurred_at: record.received_at.clone(),
+            status: record.status.clone(),
+        },
+    );
+
+    Ok((StatusCode::CREATED, Json(record)))
+}
+
+async fn list_readiness_assessments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AssessmentListResponse>, ApiError> {
+    let subject = authenticate(&headers, &state, &[SCOPE_READINESS_READ]).await?;
+    let assessments = state
+        .assessments
+        .lock()
+        .expect("readiness assessment mutex must not be poisoned")
+        .iter()
+        .rev()
+        .filter(|record| record.subject == subject)
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(Json(AssessmentListResponse { assessments }))
+}
+
+async fn get_readiness_assessment(
+    State(state): State<AppState>,
+    Path(assessment_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<AssessmentRecord>, ApiError> {
+    let subject = authenticate(&headers, &state, &[SCOPE_READINESS_READ]).await?;
+    Ok(Json(find_assessment(&state, assessment_id, &subject)?))
+}
+
+fn find_assessment(
+    state: &AppState,
+    assessment_id: Uuid,
+    subject: &str,
+) -> Result<AssessmentRecord, ApiError> {
+    state
+        .assessments
+        .lock()
+        .expect("readiness assessment mutex must not be poisoned")
+        .iter()
+        .find(|record| record.id == assessment_id && record.subject == subject)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("not_found", "readiness assessment was not found"))
+}
+
+fn publish_assessment_event(state: &AppState, event: AssessmentEventRecord) {
+    if let Some(webhook) = state.webhook.clone() {
+        tokio::spawn(async move {
+            if let Err(error) = webhook.deliver_assessment(event).await {
+                warn!(error = %error, "readiness assessment webhook delivery failed");
+            }
+        });
+    }
+}
+
 async fn authenticate(
     headers: &HeaderMap,
     state: &AppState,
@@ -1199,12 +1401,55 @@ pub(crate) struct QuoteEventRecord {
     pub occurred_at: String,
 }
 
+/// An accepted readiness-assessment intake. It records the frameworks an
+/// organization is preparing for; the eventual audit, attestation, or
+/// certification is performed by an independent third party, never by
+/// Canonical Plus.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AssessmentRecord {
+    pub framework_ids: Vec<String>,
+    pub id: Uuid,
+    /// Internal bookkeeping so eviction can clear the paired idempotency
+    /// entry; never serialized.
+    #[serde(skip_serializing)]
+    pub idempotency_key: String,
+    pub notes: Option<String>,
+    pub organization: String,
+    pub received_at: String,
+    pub status: String,
+    #[serde(skip_serializing)]
+    pub subject: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AssessmentEventRecord {
+    pub assessment_id: Uuid,
+    pub framework_ids: Vec<String>,
+    pub occurred_at: String,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssessmentListResponse {
+    assessments: Vec<AssessmentRecord>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameworkCatalogResponse {
+    boundary: &'static str,
+    frameworks: &'static [frameworks::FrameworkDescriptor],
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HealthResponse {
     database_configured: bool,
     gemini_configured: bool,
     gemini_model: String,
+    readiness_frameworks: usize,
     service: &'static str,
     shared_auth_configured: bool,
     status: &'static str,
@@ -1394,6 +1639,7 @@ mod tests {
         assert_eq!(body["geminiModel"], DEFAULT_GEMINI_MODEL);
         assert_eq!(body["sharedAuthConfigured"], false);
         assert_eq!(body["webhookConfigured"], false);
+        assert_eq!(body["readinessFrameworks"], 15);
     }
 
     #[tokio::test]
@@ -1614,6 +1860,220 @@ mod tests {
                 .unwrap();
         assert_eq!(conflict_body["code"], "idempotency_key_reused");
         assert!(conflict_body["requestId"].as_str().is_some());
+    }
+
+    fn assessment_request(subject: &str, payload: Value, key: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/readiness/assessments")
+            .header("content-type", "application/json")
+            .header("x-canonical-internal-token", TOKEN)
+            .header("x-canonical-subject", subject)
+            .header("idempotency-key", key)
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    }
+
+    fn valid_assessment_payload() -> Value {
+        json!({
+            "frameworkIds": ["iso-iec-27001-2022", "soc2-tsc"],
+            "organization": "Example Incorporated",
+            "notes": "Preparing for an independent examination next quarter."
+        })
+    }
+
+    #[tokio::test]
+    async fn readiness_framework_catalog_is_public_reference_data() {
+        for uri in ["/api/v1/readiness/frameworks", "/v1/readiness/frameworks"] {
+            let response = app()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(body["frameworks"].as_array().unwrap().len(), 15);
+            assert_eq!(
+                body["boundary"],
+                "Readiness reference data. Canonical Plus prepares organizations for \
+                 independent review; it does not perform audits, attestations, or \
+                 certifications."
+            );
+            assert_eq!(body["frameworks"][0]["id"], "cis-controls-8.1");
+            assert_eq!(
+                body["frameworks"][0]["governingBody"],
+                "Center for Internet Security"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_readiness_framework_is_not_found() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/readiness/frameworks/not-a-framework")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn authenticated_owner_can_create_and_read_a_readiness_assessment() {
+        let app = app();
+        let create = app
+            .clone()
+            .oneshot(assessment_request(
+                "user-123",
+                valid_assessment_payload(),
+                "assessment:test-0001",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+        let body: Value =
+            serde_json::from_slice(&create.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let assessment_id = body["id"].as_str().unwrap();
+        Uuid::parse_str(assessment_id).unwrap();
+        assert_eq!(
+            body["frameworkIds"],
+            json!(["iso-iec-27001-2022", "soc2-tsc"])
+        );
+        assert_eq!(body["organization"], "Example Incorporated");
+        assert_eq!(body["status"], "received");
+        assert!(body["receivedAt"].as_str().is_some());
+        assert!(body.get("subject").is_none());
+
+        let read = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/readiness/assessments/{assessment_id}"))
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::OK);
+        let read_body: Value =
+            serde_json::from_slice(&read.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(read_body["id"], assessment_id);
+        assert_eq!(read_body["status"], "received");
+    }
+
+    #[tokio::test]
+    async fn readiness_assessments_reject_unknown_framework_ids() {
+        let mut payload = valid_assessment_payload();
+        payload["frameworkIds"] = json!(["iso-iec-27001-2022", "not-a-framework"]);
+        let response = app()
+            .oneshot(assessment_request(
+                "user-123",
+                payload,
+                "assessment:test-0002",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["code"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn readiness_assessments_require_authentication() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/readiness/assessments")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "assessment:test-0003")
+                    .body(Body::from(valid_assessment_payload().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn readiness_assessments_are_isolated_between_subjects() {
+        let app = app();
+        let create = app
+            .clone()
+            .oneshot(assessment_request(
+                "subject-a",
+                valid_assessment_payload(),
+                "assessment:test-0004",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+        let body: Value =
+            serde_json::from_slice(&create.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let assessment_id = body["id"].as_str().unwrap().to_owned();
+
+        let own_list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/readiness/assessments")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "subject-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(own_list.status(), StatusCode::OK);
+        let own_body: Value =
+            serde_json::from_slice(&own_list.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(own_body["assessments"].as_array().unwrap().len(), 1);
+        assert_eq!(own_body["assessments"][0]["id"], assessment_id.as_str());
+
+        let other_list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/readiness/assessments")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "subject-b")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_list.status(), StatusCode::OK);
+        let other_body: Value =
+            serde_json::from_slice(&other_list.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(other_body["assessments"].as_array().unwrap().len(), 0);
+
+        let other_read = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/readiness/assessments/{assessment_id}"))
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "subject-b")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_read.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
