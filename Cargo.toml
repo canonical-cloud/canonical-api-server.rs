@@ -19,6 +19,7 @@ canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/
 futures-util = "0.3.32"
 hmac = "0.12.1"
 next-loggers = { git = "https://github.com/ores-otel/ores.otel.log", rev = "ca176fb6768a9750d262a536952268625ffd3a8a", package = "oresoftware-next-loggers" }
+ores-middleware = { git = "https://github.com/ORESoftware/ores-middleware", rev = "ec2327b079b88ac8fe21c3a331fe414735e2e716", features = ["axum"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
 serde = { version = "1.0.228", features = ["derive"] }
