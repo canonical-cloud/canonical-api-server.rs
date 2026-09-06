@@ -7,7 +7,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY context ./context
 COPY db ./db
-COPY vendor ./vendor
 RUN cargo build --locked --release --bin canonical-api-server
 
 FROM gcr.io/distroless/cc-debian12:nonroot

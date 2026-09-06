@@ -47,8 +47,10 @@ def main() -> None:
     namespace = json.loads(read("db/namespace.json"))
 
     dpm_revision = "d05a7880987ddaa271fa88b52c787390ef12b899"
-    canonical_lib_revision = "8986ab23a18ca0ef14422f6348b264acbb9acc43"
+    canonical_lib_revision = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"
     canonical_interfaces_revision = "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef"
+    shared_auth_revision = "cc57a85b276bee81ad94decc87df2f48d49cab9f"
+    ores_logging_revision = "ca176fb6768a9750d262a536952268625ffd3a8a"
 
     assert namespace["namespaceId"] == "canonical_cloud__quote"
     database = namespace["database"]
@@ -76,7 +78,7 @@ def main() -> None:
 
     assert interface_lock["schema_version"] == 1
     assert interface_lock["canonical_lib"] == {
-        "repository": "canonical-cloud/canonical-lib",
+        "repository": "canonical-cloud/canonical-lib-core",
         "commit": canonical_lib_revision,
     }
     assert interface_lock["canonical_interfaces"]["repository"] == (
@@ -105,23 +107,47 @@ def main() -> None:
     canonical_lib_dependency = cargo_toml["dependencies"]["canonical-lib"]
     assert canonical_lib_dependency == {
         "version": "=0.1.0",
-        "git": "https://github.com/canonical-cloud/canonical-lib",
+        "git": "https://github.com/canonical-cloud/canonical-lib-core",
         "rev": canonical_lib_revision,
     }
     assert "canonical-lib" in cargo_lock
     assert (
-        f'source = "git+https://github.com/canonical-cloud/canonical-lib?rev='
+        f'source = "git+https://github.com/canonical-cloud/canonical-lib-core?rev='
         f'{canonical_lib_revision}#{canonical_lib_revision}"'
+    ) in cargo_lock
+
+    assert cargo_toml["dependencies"]["shared-auth-client"] == {
+        "git": "https://github.com/shared-auth/shared-auth-clients",
+        "rev": shared_auth_revision,
+        "package": "shared-auth-client",
+    }
+    assert (
+        f'source = "git+https://github.com/shared-auth/shared-auth-clients?rev='
+        f'{shared_auth_revision}#{shared_auth_revision}"'
+    ) in cargo_lock
+    assert cargo_toml["dependencies"]["next-loggers"] == {
+        "git": "https://github.com/ores-otel/ores.otel.log",
+        "rev": ores_logging_revision,
+        "package": "oresoftware-next-loggers",
+    }
+    assert (
+        f'source = "git+https://github.com/ores-otel/ores.otel.log?rev='
+        f'{ores_logging_revision}#{ores_logging_revision}"'
     ) in cargo_lock
 
     assert zpkg_toml["package"]["name"] == "canonical-api-server"
     assert zpkg_toml["package"]["repository"]["url"] == (
         "https://github.com/canonical-cloud/canonical-api-server.rs"
     )
-    assert zpkg_toml["dependencies"]["canonical-cloud/canonical-lib"] == "^0.1.0"
+    assert (
+        zpkg_toml["dependencies"]["canonical-cloud/canonical-lib-core"]
+        == "^0.1.0"
+    )
     assert (
         zpkg_toml["dependencies"]["canonical-cloud/canonical-interfaces"] == "^0.1.0"
     )
+    assert zpkg_toml["dependencies"]["shared-auth/shared-auth-clients"] == "=0.1.0"
+    assert zpkg_toml["dependencies"]["oresoftware/next-loggers"] == "=0.1.0"
 
     assert "repository: declarative-migrations/declarative-postgres-migrate.rs" in (
         declarative_workflow

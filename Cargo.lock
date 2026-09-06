@@ -328,7 +328,7 @@ dependencies = [
  "futures-util",
  "hmac 0.12.1",
  "http-body-util",
- "ores-lib-core",
+ "oresoftware-next-loggers",
  "reqwest 0.13.4",
  "sea-orm",
  "serde",
@@ -358,7 +358,7 @@ dependencies = [
 [[package]]
 name = "canonical-lib"
 version = "0.1.0"
-source = "git+https://github.com/canonical-cloud/canonical-lib?rev=8986ab23a18ca0ef14422f6348b264acbb9acc43#8986ab23a18ca0ef14422f6348b264acbb9acc43"
+source = "git+https://github.com/canonical-cloud/canonical-lib-core?rev=d2f7371f01f257fbaee532b923f4c4b0d2c4dff4#d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"
 dependencies = [
  "canonical-interfaces",
  "serde",
@@ -1516,9 +1516,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "ores-lib-core"
+name = "oresoftware-next-loggers"
 version = "0.1.0"
-source = "git+https://github.com/ores-otel/ores-lib-core?rev=f4fcf8ccaedc679a38d9af7c1a1e4c8e3dc228cb#f4fcf8ccaedc679a38d9af7c1a1e4c8e3dc228cb"
+source = "git+https://github.com/ores-otel/ores.otel.log?rev=ca176fb6768a9750d262a536952268625ffd3a8a#ca176fb6768a9750d262a536952268625ffd3a8a"
+dependencies = [
+ "serde",
+ "serde_json",
+ "time",
+]
 
 [[package]]
 name = "parking"
@@ -2317,15 +2322,15 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.145"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
 dependencies = [
  "itoa",
  "memchr",
+ "ryu",
  "serde",
  "serde_core",
- "zmij",
 ]
 
 [[package]]
@@ -2407,6 +2412,7 @@ dependencies = [
 [[package]]
 name = "shared-auth-client"
 version = "0.1.0"
+source = "git+https://github.com/shared-auth/shared-auth-clients?rev=cc57a85b276bee81ad94decc87df2f48d49cab9f#cc57a85b276bee81ad94decc87df2f48d49cab9f"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -2796,9 +2802,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.55"
+version = "0.3.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
+checksum = "3e1d5e639ff6bab73cb6885cc7e7b1de96c3f32c68ec55f3952614bec1092244"
 dependencies = [
  "deranged",
  "num-conv",
@@ -3593,9 +3599,3 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "zmij"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"

@@ -38,13 +38,22 @@ jobs:
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
 
-      - name: Validate repository, interface, database, and Gemini contracts
+      - name: Validate repository, dependency, database, and Gemini contracts
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/verify-ci-contract.py
           python3 scripts/verify-declarative-db-contract.py
-          python3 scripts/verify-vendored-shared-auth-client.py
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          dependencies = manifest["dependencies"]
+          assert dependencies["shared-auth-client"]["rev"] == "cc57a85b276bee81ad94decc87df2f48d49cab9f"
+          assert dependencies["next-loggers"]["rev"] == "ca176fb6768a9750d262a536952268625ffd3a8a"
+          assert dependencies["canonical-lib"]["git"].endswith("/canonical-lib-core")
+          PY
 
   container:
     runs-on: ubuntu-24.04
