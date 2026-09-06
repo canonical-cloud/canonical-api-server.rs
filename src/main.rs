@@ -59,7 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = build_router(state).merge(readiness::router(readiness_database));
+    state.mark_started();
+    let accepting = state.accepting_handle();
+    let app = build_router(state).merge(readiness::router(readiness_database, accepting.clone()));
     info!(
         address = %config.bind_address,
         database_configured,
@@ -74,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             grace: shutdown_grace(),
             ..shutdown::Config::default()
         },
+        accepting,
     )
     .await?;
 

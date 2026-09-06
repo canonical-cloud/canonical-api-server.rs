@@ -1,6 +1,10 @@
 use std::{
     io::{self, IsTerminal, Read},
     net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -223,15 +227,29 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-pub async fn serve(listener: TcpListener, router: Router, config: Config) -> io::Result<Outcome> {
+pub async fn serve(
+    listener: TcpListener,
+    router: Router,
+    config: Config,
+    accepting: Arc<AtomicBool>,
+) -> io::Result<Outcome> {
     let (events_tx, events_rx) = event_channel();
-    serve_with_events(listener, router, config, events_tx, events_rx).await
+    serve_with_events(
+        listener,
+        router,
+        config,
+        Some(accepting),
+        events_tx,
+        events_rx,
+    )
+    .await
 }
 
 async fn serve_with_events(
     listener: TcpListener,
     router: Router,
     config: Config,
+    accepting: Option<Arc<AtomicBool>>,
     events_tx: mpsc::UnboundedSender<Event>,
     mut events_rx: mpsc::UnboundedReceiver<Event>,
 ) -> io::Result<Outcome> {
@@ -322,6 +340,9 @@ async fn serve_with_events(
                 match action {
                     Action::None => {}
                     Action::StartGraceful => {
+                        if let Some(accepting) = &accepting {
+                            accepting.store(false, Ordering::Release);
+                        }
                         tracing::info!(
                             event = "server.shutdown",
                             input = ?event,
@@ -491,6 +512,7 @@ mod tests {
                 tty: true,
                 watch_stdin_eof: false,
             },
+            None,
             server_tx,
             events_rx,
         ));
@@ -560,6 +582,7 @@ mod tests {
                 tty: false,
                 watch_stdin_eof: false,
             },
+            None,
             server_tx,
             events_rx,
         ));

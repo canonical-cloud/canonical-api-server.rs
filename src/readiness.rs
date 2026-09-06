@@ -1,3 +1,8 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -299,12 +304,18 @@ struct NotReadyResponse {
     message: &'static str,
 }
 
-pub fn router(database: Option<DatabaseConnection>) -> Router {
+pub fn router(database: Option<DatabaseConnection>, accepting: Arc<AtomicBool>) -> Router {
     Router::new().route(
         "/readyz",
         get(move || {
             let database = database.clone();
-            async move { readiness(database).await }
+            let accepting = accepting.clone();
+            async move {
+                if !accepting.load(Ordering::Acquire) {
+                    return not_ready("server_draining", "the server is draining");
+                }
+                readiness(database).await
+            }
         }),
     )
 }
@@ -374,7 +385,24 @@ fn not_ready(code: &'static str, message: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::READINESS_SQL;
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    use super::{router, READINESS_SQL};
+
+    #[tokio::test]
+    async fn ready_route_fails_closed_without_database() {
+        let response = router(None, Arc::new(AtomicBool::new(true)))
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 
     #[test]
     fn readiness_contract_names_every_security_boundary() {
