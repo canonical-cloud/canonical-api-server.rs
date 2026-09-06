@@ -1,0 +1,40 @@
+name: canonical API interface consumer contract
+
+on:
+  pull_request:
+    paths:
+      - '.zpkg.toml'
+      - '.zpkg/**'
+      - 'contracts/interfaces-source.lock.json'
+      - 'scripts/verify-interface-dependency.py'
+      - 'src/interface_contract.rs'
+      - 'src/main.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/interface-contract.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  interface-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.12'
+      - name: Verify one dependency authority across Zed, Cargo, and source
+        run: python3 scripts/verify-interface-dependency.py
+      - name: Compile the generated interface route
+        run: cargo check --all-targets --all-features --locked
+      - name: Execute the generated interface route test
+        run: cargo test interface_contract --all-features --locked
+      - name: Prove the Zed pre-build hook is the same gate
+        run: sh ./.zpkg/pre-build

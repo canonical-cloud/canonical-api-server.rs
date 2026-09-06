@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod interface_contract;
 mod readiness;
 mod shutdown;
 mod telemetry;
@@ -59,7 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = build_router(state).merge(readiness::router(readiness_database));
+    let app = build_router(state)
+        .merge(interface_contract::router())
+        .merge(readiness::router(readiness_database));
     info!(
         address = %config.bind_address,
         database_configured,

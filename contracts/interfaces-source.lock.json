@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "coordinate": "canonical-cloud/canonical-interfaces",
+  "version_requirement": "^0.1.0",
+  "repository": "https://github.com/canonical-cloud/canonical-interfaces",
+  "rust_crate": "canonical-interfaces",
+  "rust_revision": "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef",
+  "rust_target": "generated/rust",
+  "domain_library": {
+    "crate": "canonical-lib",
+    "repository": "https://github.com/canonical-cloud/canonical-lib-core",
+    "revision": "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"
+  },
+  "consumers": [
+    "src/interface_contract.rs",
+    "src/main.rs"
+  ]
+}
