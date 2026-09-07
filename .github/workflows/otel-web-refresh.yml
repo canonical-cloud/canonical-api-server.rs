@@ -1,0 +1,40 @@
+name: Verify and lock ores-otel adoption
+on:
+  push:
+    branches: ['DEN-3432-otel-web']
+    paths: ['.github/workflows/otel-web-refresh.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: otel-web-refresh-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.repository == 'canonical-cloud/canonical-api-server.rs' && github.ref == 'refs/heads/DEN-3432-otel-web'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: DEN-3432-otel-web
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+      - run: cargo generate-lockfile
+      - run: rustfmt --edition 2021 --config skip_children=true src/main.rs src/telemetry.rs
+      - run: cargo test --all-targets --all-features --locked
+      - name: Publish only verified generated files on the feature branch
+        run: |
+          set -eu
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Cargo.lock src/main.rs src/telemetry.rs
+          if git diff --cached --quiet; then exit 0; fi
+          git diff --cached --stat
+          git commit -m 'DEN-3432: commit Cargo-generated lock and verified formatting'
+          git push origin HEAD:refs/heads/DEN-3432-otel-web
+# Fixed branch/repository only; existing PR checks and review remain required.

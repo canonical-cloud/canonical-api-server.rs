@@ -51,7 +51,10 @@ jobs:
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
           dependencies = manifest["dependencies"]
           assert dependencies["shared-auth-client"]["rev"] == "cc57a85b276bee81ad94decc87df2f48d49cab9f"
-          assert dependencies["next-loggers"]["rev"] == "ca176fb6768a9750d262a536952268625ffd3a8a"
+          assert dependencies["next-loggers"]["rev"] == "74bc1c421f5a56be28cade1a47f5d45de51f3b4b"
+          bridge = manifest['target']['cfg(not(target_arch = "wasm32"))']['dependencies']['ores-otel-web']
+          assert bridge['rev'] == dependencies['next-loggers']['rev']
+          assert bridge['default-features'] is False and bridge['features'] == ['axum']
           assert dependencies["canonical-lib"]["git"].endswith("/canonical-lib-core")
           PY
 
