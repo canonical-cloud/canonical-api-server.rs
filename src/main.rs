@@ -26,7 +26,7 @@ fn shutdown_grace() -> Duration {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _telemetry = telemetry::init();
+    let telemetry = telemetry::init();
 
     let config = Config::from_env()?;
     let database = match config.database_url.as_deref() {
@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let app = build_router(state).merge(readiness::router(readiness_database));
+    let app = telemetry.instrument(app);
     info!(
         address = %config.bind_address,
         database_configured,
