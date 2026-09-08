@@ -194,7 +194,10 @@ pub(crate) fn parse_assessment_request(
     payload: JsonValue,
 ) -> Result<AssessmentSubmission, ApiError> {
     let object = payload.as_object().ok_or_else(|| {
-        ApiError::bad_request("invalid_request", "assessment request must be a JSON object")
+        ApiError::bad_request(
+            "invalid_request",
+            "assessment request must be a JSON object",
+        )
     })?;
     if object
         .keys()
@@ -227,7 +230,10 @@ pub(crate) fn parse_assessment_request(
                     "frameworkIds may only contain known readiness framework ids",
                 )
             })?;
-        if framework_ids.iter().any(|existing| existing == framework_id) {
+        if framework_ids
+            .iter()
+            .any(|existing| existing == framework_id)
+        {
             return Err(ApiError::bad_request(
                 "invalid_request",
                 "frameworkIds must not contain duplicates",
@@ -244,7 +250,10 @@ pub(crate) fn parse_assessment_request(
             !organization.is_empty() && organization.len() <= MAX_ASSESSMENT_ORGANIZATION_BYTES
         })
         .ok_or_else(|| {
-            ApiError::bad_request("invalid_request", "organization must contain 1 to 200 bytes")
+            ApiError::bad_request(
+                "invalid_request",
+                "organization must contain 1 to 200 bytes",
+            )
         })?
         .to_owned();
 
