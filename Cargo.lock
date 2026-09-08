@@ -1612,7 +1612,7 @@ dependencies = [
 [[package]]
 name = "ores-transport"
 version = "0.1.0"
-source = "git+https://github.com/ORESoftware/ores-transport.git?branch=main#c544e1a11a212dc43a5c1f87ea70a95939e80e2e"
+source = "git+https://github.com/ORESoftware/ores-transport.git?rev=c544e1a11a212dc43a5c1f87ea70a95939e80e2e#c544e1a11a212dc43a5c1f87ea70a95939e80e2e"
 dependencies = [
  "async-nats",
  "async-trait",

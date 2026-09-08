@@ -13,7 +13,7 @@ name = "canonical-api-server"
 path = "src/main.rs"
 
 [dependencies]
-ores-transport = { git = "https://github.com/ORESoftware/ores-transport.git", branch = "main" }  # TODO(DEN): pin to a rev once ores-transport is pushed
+ores-transport = { git = "https://github.com/ORESoftware/ores-transport.git", rev = "c544e1a11a212dc43a5c1f87ea70a95939e80e2e" }
 k8s-web-api-data-plane = { git = "https://github.com/ORESoftware/k8s-libs-and-shared-defs.git", rev = "55adadc9f6d223d40b28ae66097dfe16930951b1", package = "k8s-web-api-data-plane" }
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
