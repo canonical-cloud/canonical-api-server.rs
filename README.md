@@ -114,6 +114,63 @@ attempts. A local concurrency limit is not a substitute for that recovery path.
 The generated analysis is a non-binding scope and price estimate. It is not a
 certification, audit opinion, legal opinion, or guarantee of attestation.
 
+## Readiness API
+
+Canonical Plus is a compliance-readiness company. The readiness API publishes
+reference data about the frameworks we prepare organizations for and records
+owner-scoped readiness-assessment intakes. Canonical Plus prepares
+organizations for independent review; it does not perform audits,
+attestations, or certifications — independent auditors, assessors, and
+certification bodies do. Every catalog response repeats that boundary in a
+top-level `boundary` field.
+
+The framework catalog is public, static reference data: fifteen descriptors
+(`id`, `title`, `governingBody`, `category`, `summary`, `sourceUrl`) covering
+assurance targets such as SOC 2 and ISO/IEC 27001, security-program frameworks
+such as NIST CSF 2.0, and privacy regulations such as GDPR. Every route is
+served under both `/api/v1` and `/v1`.
+
+```sh
+curl --fail https://api.canonical.plus/v1/readiness/frameworks
+curl --fail https://api.canonical.plus/v1/readiness/frameworks/iso-iec-27001-2022
+```
+
+Recording an assessment intake requires the same authentication as quotes and
+an `Idempotency-Key`. The body lists 1 to 15 unique catalog ids in
+`frameworkIds`, an `organization` of 1 to 200 bytes, and optional `notes` of
+at most 2000 bytes. Assessment submissions share the server's existing
+per-subject and global submission rate-limit window with quote submissions.
+The API answers `201` with the stored record in the `received` state; the
+record marks the start of readiness preparation, not an audit engagement.
+
+```sh
+curl --fail \
+  --request POST https://api.canonical.plus/v1/readiness/assessments \
+  --header "Authorization: Bearer $CANONICAL_API_TOKEN" \
+  --header "Content-Type: application/json" \
+  --header "Idempotency-Key: assessment:2026-08-0001" \
+  --data '{
+    "frameworkIds": ["iso-iec-27001-2022", "soc2-tsc"],
+    "organization": "Example Incorporated",
+    "notes": "Preparing for an independent examination next quarter."
+  }'
+
+curl --fail https://api.canonical.plus/v1/readiness/assessments \
+  --header "Authorization: Bearer $CANONICAL_API_TOKEN"
+
+curl --fail "https://api.canonical.plus/v1/readiness/assessments/$ASSESSMENT_ID" \
+  --header "Authorization: Bearer $CANONICAL_API_TOKEN"
+```
+
+Listing and reads are owner-scoped: a caller only ever sees their own
+assessments. Accepted intakes are held in a bounded in-memory store (1024
+records, oldest evicted first) and are not yet durable across restarts; move
+them into PostgreSQL before selling assessment tracking. When the webhook pair
+is configured, each accepted intake also emits a signed
+`readiness.assessment.received` event with the stable
+`readiness-assessment:{assessmentId}` identifier; payloads omit the trusted
+subject.
+
 ## Routes
 
 | Route | Purpose |
@@ -123,6 +180,11 @@ certification, audit opinion, legal opinion, or guarantee of attestation.
 | `GET /api/v1/quotes/{quote_id}` | Owner-scoped durable quote status/result |
 | `POST /api/v1/quotes/{quote_id}/retry` | Idempotently requeue a failed quote |
 | `GET /api/v1/quotes/{quote_id}/events` | Owner-scoped WebSocket status stream |
+| `GET /api/v1/readiness/frameworks` | Public readiness framework reference catalog |
+| `GET /api/v1/readiness/frameworks/{framework_id}` | One readiness framework descriptor |
+| `POST /api/v1/readiness/assessments` | Idempotently record an owner-scoped readiness intake |
+| `GET /api/v1/readiness/assessments` | Owner-scoped readiness assessment list |
+| `GET /api/v1/readiness/assessments/{assessment_id}` | Owner-scoped readiness assessment detail |
 
 Cloudflare and the ingress must remove client-supplied `x-canonical-*` and
 `x-auth-*` headers. The API must not be routed directly to an unrestricted
