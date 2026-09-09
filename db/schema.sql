@@ -119,6 +119,70 @@ CREATE TABLE canonical_cloud__quote.canonical_model_attempt (
         ON DELETE CASCADE
 );
 
+CREATE TABLE canonical_cloud__quote.canonical_readiness_observation (
+    owner_subject text NOT NULL CHECK (char_length(owner_subject) BETWEEN 1 AND 255),
+    source_id text NOT NULL,
+    event_id text NOT NULL,
+    source_sequence bigint NOT NULL,
+    organization text NOT NULL CHECK (char_length(organization) BETWEEN 1 AND 200),
+    observed_at timestamptz NOT NULL,
+    payload_sha256 text NOT NULL,
+    prior_record_sha256 text NOT NULL,
+    record_sha256 text NOT NULL,
+    receipt_id text NOT NULL,
+    key_id text NOT NULL,
+    event_json jsonb NOT NULL,
+    raw_body_octets bigint NOT NULL,
+    transport_verification text NOT NULL,
+    substantive_review text NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT canonical_readiness_observation_owner_source_event_pk
+        PRIMARY KEY (owner_subject, source_id, event_id),
+    CONSTRAINT canonical_readiness_observation_owner_source_sequence_unique
+        UNIQUE (owner_subject, source_id, source_sequence),
+    CONSTRAINT canonical_readiness_observation_receipt_id_unique
+        UNIQUE (receipt_id),
+    CONSTRAINT canonical_readiness_observation_source_id_check CHECK (
+        char_length(source_id) BETWEEN 1 AND 128
+        AND source_id ~ '^[A-Za-z0-9._:/-]+$'
+    ),
+    CONSTRAINT canonical_readiness_observation_event_id_check CHECK (
+        char_length(event_id) BETWEEN 1 AND 128
+        AND event_id ~ '^[A-Za-z0-9._:/-]+$'
+    ),
+    CONSTRAINT canonical_readiness_observation_source_sequence_check
+        CHECK (source_sequence > 0),
+    CONSTRAINT canonical_readiness_observation_payload_sha256_check
+        CHECK (payload_sha256 ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT canonical_readiness_observation_prior_record_sha256_check
+        CHECK (prior_record_sha256 ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT canonical_readiness_observation_record_sha256_check
+        CHECK (record_sha256 ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT canonical_readiness_observation_receipt_id_check CHECK (
+        char_length(receipt_id) BETWEEN 8 AND 128
+        AND receipt_id ~ '^[A-Za-z0-9._:/-]+$'
+    ),
+    CONSTRAINT canonical_readiness_observation_key_id_check CHECK (
+        char_length(key_id) BETWEEN 1 AND 128
+        AND key_id ~ '^[A-Za-z0-9._:/-]+$'
+    ),
+    CONSTRAINT canonical_readiness_observation_event_json_object_check
+        CHECK (jsonb_typeof(event_json) = 'object'),
+    CONSTRAINT canonical_readiness_observation_raw_body_octets_check
+        CHECK (raw_body_octets BETWEEN 1 AND 262144),
+    CONSTRAINT canonical_readiness_observation_transport_verification_check
+        CHECK (transport_verification = 'signature-valid'),
+    CONSTRAINT canonical_readiness_observation_substantive_review_check CHECK (
+        substantive_review IN (
+            'unreviewed',
+            'in-review',
+            'accepted-as-evidence',
+            'rejected',
+            'superseded'
+        )
+    )
+);
+
 CREATE INDEX canonical_context_owner_active_idx
     ON canonical_cloud__quote.canonical_context (
         owner_subject,
@@ -153,6 +217,14 @@ CREATE INDEX canonical_model_attempt_quote_started_idx
     ON canonical_cloud__quote.canonical_model_attempt (
         quote_id,
         started_at DESC
+    );
+
+CREATE INDEX canonical_readiness_observation_owner_received_idx
+    ON canonical_cloud__quote.canonical_readiness_observation (
+        owner_subject,
+        received_at DESC,
+        source_id,
+        source_sequence DESC
     );
 
 CREATE FUNCTION canonical_cloud__quote.canonical_set_updated_at()
@@ -195,6 +267,10 @@ ALTER TABLE canonical_cloud__quote.canonical_model_attempt
     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE canonical_cloud__quote.canonical_model_attempt
     FORCE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_readiness_observation
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE canonical_cloud__quote.canonical_readiness_observation
+    FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY canonical_context_owner_policy
 ON canonical_cloud__quote.canonical_context
@@ -234,6 +310,15 @@ WITH CHECK (
 
 CREATE POLICY canonical_model_attempt_owner_policy
 ON canonical_cloud__quote.canonical_model_attempt
+USING (
+    owner_subject = current_setting('app.current_subject', TRUE)
+)
+WITH CHECK (
+    owner_subject = current_setting('app.current_subject', TRUE)
+);
+
+CREATE POLICY canonical_readiness_observation_owner_policy
+ON canonical_cloud__quote.canonical_readiness_observation
 USING (
     owner_subject = current_setting('app.current_subject', TRUE)
 )
