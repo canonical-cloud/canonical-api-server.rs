@@ -419,10 +419,7 @@ impl KeyRing {
         if now.unix_timestamp().abs_diff(timestamp) > MAX_CLOCK_SKEW_SECONDS as u64 {
             return Err(IngestError::StaleSignature);
         }
-        let supplied = parse_signature(header(
-            headers,
-            "x-canonical-webhook-signature",
-        )?)?;
+        let supplied = parse_signature(header(headers, "x-canonical-webhook-signature")?)?;
         let candidates = self
             .by_source
             .get(&event.source_id)
@@ -435,8 +432,8 @@ impl KeyRing {
             {
                 continue;
             }
-            let mut mac = HmacSha256::new_from_slice(&key.secret)
-                .map_err(|_| IngestError::Internal)?;
+            let mut mac =
+                HmacSha256::new_from_slice(&key.secret).map_err(|_| IngestError::Internal)?;
             mac.update(timestamp_text.as_bytes());
             mac.update(b".");
             mac.update(body);
@@ -534,7 +531,8 @@ fn validate_event(event: &ObservationEvent, now: OffsetDateTime) -> Result<(), I
         return Err(IngestError::InvalidRequest);
     }
 
-    let observed_at = parse_timestamp(&event.observed_at).map_err(|_| IngestError::InvalidRequest)?;
+    let observed_at =
+        parse_timestamp(&event.observed_at).map_err(|_| IngestError::InvalidRequest)?;
     if observed_at.unix_timestamp() - now.unix_timestamp() > MAX_CLOCK_SKEW_SECONDS {
         return Err(IngestError::InvalidRequest);
     }
@@ -550,9 +548,7 @@ fn validate_event(event: &ObservationEvent, now: OffsetDateTime) -> Result<(), I
                     || value.len() > MAX_CONTENT_TYPE_BYTES
                     || value.bytes().any(|byte| byte.is_ascii_control())
             })
-            || evidence
-                .size_bytes
-                .is_some_and(|size| size > (1_u64 << 50))
+            || evidence.size_bytes.is_some_and(|size| size > (1_u64 << 50))
             || !evidence_ids.insert(evidence.evidence_id.as_str())
         {
             return Err(IngestError::InvalidRequest);
@@ -560,8 +556,7 @@ fn validate_event(event: &ObservationEvent, now: OffsetDateTime) -> Result<(), I
         let collected_at =
             parse_timestamp(&evidence.collected_at).map_err(|_| IngestError::InvalidRequest)?;
         if collected_at.unix_timestamp() - now.unix_timestamp() > MAX_CLOCK_SKEW_SECONDS
-            || collected_at.unix_timestamp() - observed_at.unix_timestamp()
-                > MAX_CLOCK_SKEW_SECONDS
+            || collected_at.unix_timestamp() - observed_at.unix_timestamp() > MAX_CLOCK_SKEW_SECONDS
         {
             return Err(IngestError::InvalidRequest);
         }
@@ -714,8 +709,7 @@ async fn store_database(
         return Err(IngestError::SequenceConflict);
     }
 
-    let event_json: JsonValue =
-        serde_json::to_value(event).map_err(|_| IngestError::Internal)?;
+    let event_json: JsonValue = serde_json::to_value(event).map_err(|_| IngestError::Internal)?;
     let record_sha256 = record_digest(
         &prior_record_sha256,
         payload_sha256,
@@ -778,10 +772,7 @@ async fn store_database(
     })
 }
 
-async fn set_subject(
-    transaction: &DatabaseTransaction,
-    subject: &str,
-) -> Result<(), IngestError> {
+async fn set_subject(transaction: &DatabaseTransaction, subject: &str) -> Result<(), IngestError> {
     transaction
         .execute_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
@@ -798,11 +789,7 @@ fn validate_content_type(headers: &HeaderMap) -> Result<(), IngestError> {
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .ok_or(IngestError::InvalidRequest)?;
-    let media_type = value
-        .split(';')
-        .next()
-        .map(str::trim)
-        .unwrap_or_default();
+    let media_type = value.split(';').next().map(str::trim).unwrap_or_default();
     if media_type.eq_ignore_ascii_case("application/json") {
         Ok(())
     } else {
@@ -1162,12 +1149,7 @@ mod tests {
             signed_headers(&altered_body, &altered.event_id, now.unix_timestamp());
         assert!(matches!(
             service
-                .ingest(
-                    &altered.source_id,
-                    &altered_headers,
-                    &altered_body,
-                    now
-                )
+                .ingest(&altered.source_id, &altered_headers, &altered_body, now)
                 .await,
             Err(IngestError::EventConflict)
         ));
