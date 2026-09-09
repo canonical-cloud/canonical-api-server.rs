@@ -10,8 +10,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
@@ -23,7 +24,6 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
@@ -32,9 +32,18 @@ pub const KEYS_ENV: &str = "CANONICAL_READINESS_INGEST_KEYS_JSON";
 const EVENT_SPEC: &str = "canonical.readiness.observation.v1";
 const RECEIPT_SPEC: &str = "canonical.readiness.observation.receipt.v1";
 const PROBLEM_SPEC: &str = "canonical.readiness.observation.problem.v1";
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+const RECORD_DOMAIN: &[u8] = b"canonical.readiness.observation.record.v1\n";
+const MAX_BODY_BYTES: usize = 256 * 1024;
 const MAX_CLOCK_SKEW_SECONDS: i64 = 300;
+const MAX_ASSERTIONS: usize = 256;
+const MAX_EVIDENCE: usize = 256;
+const MAX_IDENTIFIER_BYTES: usize = 128;
+const MAX_STATEMENT_BYTES: usize = 2_048;
+const MAX_LOCATOR_BYTES: usize = 2_048;
+const MAX_CONTENT_TYPE_BYTES: usize = 128;
 const MEMORY_CAPACITY: usize = 10_000;
+const ZERO_RECORD_DIGEST: &str =
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -43,6 +52,7 @@ pub struct ObservationService {
     database: Option<DatabaseConnection>,
     keys: Arc<KeyRing>,
     memory: Arc<Mutex<MemoryStore>>,
+    allow_memory: bool,
 }
 
 impl fmt::Debug for ObservationService {
@@ -50,7 +60,8 @@ impl fmt::Debug for ObservationService {
         formatter
             .debug_struct("ObservationService")
             .field("database_configured", &self.database.is_some())
-            .field("configured_keys", &self.keys.by_id.len())
+            .field("configured_sources", &self.keys.by_source.len())
+            .field("allow_memory", &self.allow_memory)
             .finish()
     }
 }
@@ -66,6 +77,7 @@ impl ObservationService {
             database,
             keys: Arc::new(keys),
             memory: Arc::new(Mutex::new(MemoryStore::default())),
+            allow_memory: false,
         })
     }
 
@@ -75,47 +87,70 @@ impl ObservationService {
             database: None,
             keys: Arc::new(KeyRing::parse(document)?),
             memory: Arc::new(Mutex::new(MemoryStore::default())),
+            allow_memory: true,
         })
     }
 
     async fn ingest(
         &self,
+        path_source_id: &str,
         headers: &HeaderMap,
         body: &[u8],
         now: OffsetDateTime,
     ) -> Result<ObservationReceipt, IngestError> {
-        if body.is_empty() || body.len() > MAX_BODY_BYTES {
+        validate_content_type(headers)?;
+        if body.is_empty() {
             return Err(IngestError::InvalidRequest);
         }
-        let payload_sha256 = sha256_label(body);
-        verify_content_digest(headers, body)?;
+        if body.len() > MAX_BODY_BYTES {
+            return Err(IngestError::BodyTooLarge);
+        }
+
         let event: ObservationEvent =
             serde_json::from_slice(body).map_err(|_| IngestError::InvalidRequest)?;
         validate_event(&event, now)?;
-        require_header(headers, "webhook-id", &event.event_id)?;
-        require_header(headers, "idempotency-key", &event.event_id)?;
-        let transport = self.keys.verify(headers, body, &event, now)?;
+        if path_source_id != event.source_id {
+            return Err(IngestError::InvalidRequest);
+        }
 
-        let duplicate = match &self.database {
+        let transport = self.keys.verify(headers, body, &event, now)?;
+        let payload_sha256 = sha256_label(body);
+        let candidate = ReceiptIdentity {
+            receipt_id: format!("rcpt_{}", Uuid::new_v4().simple()),
+            received_at: format_timestamp(now)?,
+        };
+        let stored = match &self.database {
             Some(database) => {
-                store_database(database, &transport, &event, &payload_sha256, body.len()).await?
+                store_database(
+                    database,
+                    &transport,
+                    &event,
+                    &payload_sha256,
+                    body.len(),
+                    &candidate,
+                )
+                .await?
             }
-            None => self.store_memory(&transport, &event, &payload_sha256)?,
+            None if self.allow_memory => {
+                self.store_memory(&transport, &event, &payload_sha256, candidate)?
+            }
+            None => return Err(IngestError::StorageUnavailable),
         };
 
-        let received_at = now
-            .format(&Rfc3339)
-            .map_err(|_| IngestError::Internal)?;
         Ok(ObservationReceipt {
             spec_version: RECEIPT_SPEC,
-            receipt_id: format!("rcpt_{}", Uuid::new_v4().simple()),
+            receipt_id: stored.receipt_id,
             event_id: event.event_id,
             source_id: event.source_id,
             source_sequence: event.source_sequence,
-            status: if duplicate { "duplicate" } else { "accepted" },
-            duplicate,
+            status: if stored.duplicate {
+                "duplicate"
+            } else {
+                "accepted"
+            },
+            duplicate: stored.duplicate,
             payload_sha256,
-            received_at,
+            received_at: stored.received_at,
             transport_verification: "signature-valid",
             substantive_review: "unreviewed",
         })
@@ -126,7 +161,8 @@ impl ObservationService {
         transport: &VerifiedTransport,
         event: &ObservationEvent,
         payload_sha256: &str,
-    ) -> Result<bool, IngestError> {
+        candidate: ReceiptIdentity,
+    ) -> Result<StorageOutcome, IngestError> {
         let mut memory = self
             .memory
             .lock()
@@ -137,66 +173,146 @@ impl ObservationService {
             event.event_id.clone(),
         );
         if let Some(existing) = memory.events.get(&event_key) {
-            return if existing == payload_sha256 {
-                Ok(true)
+            return if existing.payload_sha256 == payload_sha256
+                && existing.source_sequence == event.source_sequence
+            {
+                Ok(StorageOutcome {
+                    duplicate: true,
+                    receipt_id: existing.receipt_id.clone(),
+                    received_at: existing.received_at.clone(),
+                })
             } else {
                 Err(IngestError::EventConflict)
             };
         }
 
         let stream_key = (transport.owner_subject.clone(), event.source_id.clone());
-        if memory
-            .sequences
+        let (prior_sequence, prior_record_sha256) = memory
+            .streams
             .get(&stream_key)
-            .is_some_and(|sequence| event.source_sequence <= *sequence)
-        {
+            .map(|cursor| (cursor.source_sequence, cursor.record_sha256.as_str()))
+            .unwrap_or((0, ZERO_RECORD_DIGEST));
+        let expected = prior_sequence
+            .checked_add(1)
+            .ok_or(IngestError::SequenceConflict)?;
+        if event.source_sequence != expected {
             return Err(IngestError::SequenceConflict);
         }
         if memory.order.len() >= MEMORY_CAPACITY {
             return Err(IngestError::StorageUnavailable);
         }
-        memory.events.insert(event_key.clone(), payload_sha256.into());
-        memory
-            .sequences
-            .insert(stream_key, event.source_sequence);
+
+        let record_sha256 = record_digest(
+            prior_record_sha256,
+            payload_sha256,
+            &event.event_id,
+            event.source_sequence,
+        );
+        memory.events.insert(
+            event_key.clone(),
+            MemoryRecord {
+                source_sequence: event.source_sequence,
+                payload_sha256: payload_sha256.into(),
+                receipt_id: candidate.receipt_id.clone(),
+                received_at: candidate.received_at.clone(),
+            },
+        );
+        memory.streams.insert(
+            stream_key,
+            StreamCursor {
+                source_sequence: event.source_sequence,
+                record_sha256,
+            },
+        );
         memory.order.push_back(event_key);
-        Ok(false)
+        Ok(StorageOutcome {
+            duplicate: false,
+            receipt_id: candidate.receipt_id,
+            received_at: candidate.received_at,
+        })
     }
 }
 
 pub fn router(service: ObservationService) -> Router {
     Router::new()
-        .route("/api/v1/readiness/observations", post(ingest_observation))
-        .route("/v1/readiness/observations", post(ingest_observation))
+        .route(
+            "/api/v1/readiness/sources/{source_id}/observations",
+            post(ingest_observation),
+        )
+        .route(
+            "/v1/readiness/sources/{source_id}/observations",
+            post(ingest_observation),
+        )
         .with_state(service)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::map_response(observation_security_headers))
 }
 
 async fn ingest_observation(
     State(service): State<ObservationService>,
+    Path(source_id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<ObservationReceipt>), IngestProblem> {
     let receipt = service
-        .ingest(&headers, &body, OffsetDateTime::now_utc())
+        .ingest(&source_id, &headers, &body, OffsetDateTime::now_utc())
         .await
         .map_err(IngestProblem::from)?;
-    let status = if receipt.duplicate {
-        StatusCode::OK
-    } else {
-        StatusCode::CREATED
-    };
-    Ok((status, Json(receipt)))
+    Ok((StatusCode::ACCEPTED, Json(receipt)))
+}
+
+async fn observation_security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("default-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        "permissions-policy",
+        HeaderValue::from_static("camera=(), geolocation=(), microphone=()"),
+    );
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    response
 }
 
 #[derive(Default)]
 struct MemoryStore {
-    events: HashMap<(String, String, String), String>,
-    sequences: HashMap<(String, String), i64>,
+    events: HashMap<(String, String, String), MemoryRecord>,
+    streams: HashMap<(String, String), StreamCursor>,
     order: VecDeque<(String, String, String)>,
 }
 
+struct MemoryRecord {
+    source_sequence: i64,
+    payload_sha256: String,
+    receipt_id: String,
+    received_at: String,
+}
+
+struct StreamCursor {
+    source_sequence: i64,
+    record_sha256: String,
+}
+
+struct ReceiptIdentity {
+    receipt_id: String,
+    received_at: String,
+}
+
+struct StorageOutcome {
+    duplicate: bool,
+    receipt_id: String,
+    received_at: String,
+}
+
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 struct KeyDocument {
     keys: Vec<KeyInput>,
 }
@@ -217,11 +333,11 @@ struct KeyInput {
 
 #[derive(Default)]
 struct KeyRing {
-    by_id: HashMap<String, IngestKey>,
+    by_source: HashMap<String, Vec<IngestKey>>,
 }
 
 struct IngestKey {
-    source_id: String,
+    key_id: String,
     organization: String,
     owner_subject: String,
     secret: Vec<u8>,
@@ -236,22 +352,20 @@ impl KeyRing {
         if document.keys.len() > 128 {
             return Err(BuildError::TooManyKeys);
         }
-        let mut by_id = HashMap::new();
+
+        let mut key_ids = HashSet::new();
+        let mut by_source: HashMap<String, Vec<IngestKey>> = HashMap::new();
         for input in document.keys {
-            if !portable_id(&input.key_id)
-                || !portable_id(&input.source_id)
-                || input.organization.trim().is_empty()
-                || input.organization.len() > 200
+            if !portable_identifier(&input.key_id)
+                || !portable_identifier(&input.source_id)
+                || !portable_identifier(&input.organization)
                 || !valid_subject(&input.owner_subject)
+                || !key_ids.insert(input.key_id.clone())
             {
                 return Err(BuildError::InvalidKeyDocument);
             }
-            let encoded = input
-                .secret
-                .strip_prefix("whsec_")
-                .ok_or(BuildError::InvalidSecret)?;
-            let secret = decode_base64(encoded).map_err(|_| BuildError::InvalidSecret)?;
-            if secret.len() < 24 {
+            let secret = input.secret.into_bytes();
+            if secret.len() < 32 || secret.iter().any(|byte| !byte.is_ascii_graphic()) {
                 return Err(BuildError::InvalidSecret);
             }
             let valid_from = input
@@ -272,24 +386,19 @@ impl KeyRing {
             {
                 return Err(BuildError::InvalidKeyDocument);
             }
-            if by_id
-                .insert(
-                    input.key_id,
-                    IngestKey {
-                        source_id: input.source_id,
-                        organization: input.organization,
-                        owner_subject: input.owner_subject,
-                        secret,
-                        valid_from,
-                        valid_until,
-                    },
-                )
-                .is_some()
-            {
-                return Err(BuildError::DuplicateKeyId);
-            }
+            by_source
+                .entry(input.source_id)
+                .or_default()
+                .push(IngestKey {
+                    key_id: input.key_id,
+                    organization: input.organization,
+                    owner_subject: input.owner_subject,
+                    secret,
+                    valid_from,
+                    valid_until,
+                });
         }
-        Ok(Self { by_id })
+        Ok(Self { by_source })
     }
 
     fn verify(
@@ -299,48 +408,46 @@ impl KeyRing {
         event: &ObservationEvent,
         now: OffsetDateTime,
     ) -> Result<VerifiedTransport, IngestError> {
-        let key_id = header(headers, "webhook-key-id")?;
-        let key = self.by_id.get(key_id).ok_or(IngestError::UnknownSource)?;
-        if key.source_id != event.source_id || key.organization != event.organization {
-            return Err(IngestError::UnknownSource);
+        let webhook_id = header(headers, "x-canonical-webhook-id")?;
+        if webhook_id != event.event_id {
+            return Err(IngestError::InvalidSignature);
         }
-        if key.valid_from.is_some_and(|start| now < start)
-            || key.valid_until.is_some_and(|end| now >= end)
-        {
-            return Err(IngestError::UnknownSource);
-        }
-        let timestamp_text = header(headers, "webhook-timestamp")?;
+        let timestamp_text = header(headers, "x-canonical-webhook-timestamp")?;
         let timestamp = timestamp_text
             .parse::<i64>()
             .map_err(|_| IngestError::InvalidSignature)?;
         if now.unix_timestamp().abs_diff(timestamp) > MAX_CLOCK_SKEW_SECONDS as u64 {
             return Err(IngestError::StaleSignature);
         }
-        let supplied = header(headers, "webhook-signature")?;
-        let mut mac = HmacSha256::new_from_slice(&key.secret)
-            .map_err(|_| IngestError::Internal)?;
-        mac.update(event.event_id.as_bytes());
-        mac.update(b".");
-        mac.update(timestamp_text.as_bytes());
-        mac.update(b".");
-        mac.update(body);
-        let expected = mac.finalize().into_bytes();
-        let valid = supplied.split_whitespace().any(|candidate| {
-            candidate
-                .strip_prefix("v1,")
-                .and_then(|encoded| decode_base64(encoded).ok())
-                .is_some_and(|decoded| {
-                    decoded.len() == expected.len()
-                        && bool::from(decoded.as_slice().ct_eq(expected.as_slice()))
-                })
-        });
-        if !valid {
-            return Err(IngestError::InvalidSignature);
+        let supplied = parse_signature(header(
+            headers,
+            "x-canonical-webhook-signature",
+        )?)?;
+        let candidates = self
+            .by_source
+            .get(&event.source_id)
+            .ok_or(IngestError::InvalidSignature)?;
+
+        for key in candidates {
+            if key.organization != event.organization
+                || key.valid_from.is_some_and(|start| now < start)
+                || key.valid_until.is_some_and(|end| now >= end)
+            {
+                continue;
+            }
+            let mut mac = HmacSha256::new_from_slice(&key.secret)
+                .map_err(|_| IngestError::Internal)?;
+            mac.update(timestamp_text.as_bytes());
+            mac.update(b".");
+            mac.update(body);
+            if mac.verify_slice(&supplied).is_ok() {
+                return Ok(VerifiedTransport {
+                    key_id: key.key_id.clone(),
+                    owner_subject: key.owner_subject.clone(),
+                });
+            }
         }
-        Ok(VerifiedTransport {
-            key_id: key_id.to_owned(),
-            owner_subject: key.owner_subject.clone(),
-        })
+        Err(IngestError::InvalidSignature)
     }
 }
 
@@ -416,17 +523,17 @@ struct ObservationReceipt {
 
 fn validate_event(event: &ObservationEvent, now: OffsetDateTime) -> Result<(), IngestError> {
     if event.spec_version != EVENT_SPEC
-        || !portable_id(&event.event_id)
-        || !portable_id(&event.source_id)
+        || !portable_identifier(&event.event_id)
+        || !portable_identifier(&event.source_id)
+        || !portable_identifier(&event.organization)
         || event.source_sequence <= 0
-        || event.organization.trim().is_empty()
-        || event.organization.len() > 200
         || event.assertions.is_empty()
-        || event.assertions.len() > 512
-        || event.evidence.len() > 512
+        || event.assertions.len() > MAX_ASSERTIONS
+        || event.evidence.len() > MAX_EVIDENCE
     {
         return Err(IngestError::InvalidRequest);
     }
+
     let observed_at = parse_timestamp(&event.observed_at).map_err(|_| IngestError::InvalidRequest)?;
     if observed_at.unix_timestamp() - now.unix_timestamp() > MAX_CLOCK_SKEW_SECONDS {
         return Err(IngestError::InvalidRequest);
@@ -434,26 +541,26 @@ fn validate_event(event: &ObservationEvent, now: OffsetDateTime) -> Result<(), I
 
     let mut evidence_ids = HashSet::new();
     for evidence in &event.evidence {
-        if !portable_id(&evidence.evidence_id)
-            || evidence.kind.trim().is_empty()
-            || evidence.kind.len() > 80
+        if !portable_identifier(&evidence.evidence_id)
+            || evidence.kind.is_empty()
+            || evidence.kind.len() > 64
             || !valid_sha256(&evidence.sha256)
             || evidence.content_type.as_ref().is_some_and(|value| {
                 value.is_empty()
-                    || value.len() > 160
+                    || value.len() > MAX_CONTENT_TYPE_BYTES
                     || value.bytes().any(|byte| byte.is_ascii_control())
             })
             || evidence
                 .size_bytes
-                .is_some_and(|size| size > 1_099_511_627_776)
+                .is_some_and(|size| size > (1_u64 << 50))
             || !evidence_ids.insert(evidence.evidence_id.as_str())
         {
             return Err(IngestError::InvalidRequest);
         }
-        let collected =
+        let collected_at =
             parse_timestamp(&evidence.collected_at).map_err(|_| IngestError::InvalidRequest)?;
-        if collected.unix_timestamp() - now.unix_timestamp() > MAX_CLOCK_SKEW_SECONDS
-            || collected.unix_timestamp() - observed_at.unix_timestamp()
+        if collected_at.unix_timestamp() - now.unix_timestamp() > MAX_CLOCK_SKEW_SECONDS
+            || collected_at.unix_timestamp() - observed_at.unix_timestamp()
                 > MAX_CLOCK_SKEW_SECONDS
         {
             return Err(IngestError::InvalidRequest);
@@ -465,12 +572,12 @@ fn validate_event(event: &ObservationEvent, now: OffsetDateTime) -> Result<(), I
 
     let mut assertions = HashSet::new();
     for assertion in &event.assertions {
-        if !portable_name(&assertion.framework_id, 2, 128)
-            || !portable_name(&assertion.control_id, 1, 128)
+        if !portable_identifier(&assertion.framework_id)
+            || !portable_identifier(&assertion.control_id)
             || assertion
                 .statement
                 .as_ref()
-                .is_some_and(|value| value.len() > 4096)
+                .is_some_and(|value| value.is_empty() || value.len() > MAX_STATEMENT_BYTES)
             || assertion.evidence_ids.len() > 128
             || !assertions.insert((
                 assertion.framework_id.as_str(),
@@ -492,7 +599,7 @@ fn validate_event(event: &ObservationEvent, now: OffsetDateTime) -> Result<(), I
 }
 
 fn validate_locator(locator: &str) -> Result<(), IngestError> {
-    if locator.is_empty() || locator.len() > 2048 {
+    if locator.is_empty() || locator.len() > MAX_LOCATOR_BYTES {
         return Err(IngestError::InvalidRequest);
     }
     let parsed = reqwest::Url::parse(locator).map_err(|_| IngestError::InvalidRequest)?;
@@ -516,7 +623,8 @@ async fn store_database(
     event: &ObservationEvent,
     payload_sha256: &str,
     body_len: usize,
-) -> Result<bool, IngestError> {
+    candidate: &ReceiptIdentity,
+) -> Result<StorageOutcome, IngestError> {
     if database.get_database_backend() != DatabaseBackend::Postgres {
         return Err(IngestError::StorageUnavailable);
     }
@@ -538,7 +646,14 @@ async fn store_database(
         .query_one_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
             r#"
-            SELECT payload_sha256
+            SELECT
+                payload_sha256,
+                source_sequence,
+                receipt_id,
+                to_char(
+                    received_at AT TIME ZONE 'UTC',
+                    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                ) AS received_at_text
             FROM canonical_readiness_observation
             WHERE owner_subject = $1
               AND source_id = $2
@@ -552,10 +667,16 @@ async fn store_database(
         ))
         .await?;
     if let Some(row) = existing {
-        let stored: String = row.try_get("", "payload_sha256")?;
-        if stored == payload_sha256 {
+        let stored_payload: String = row.try_get("", "payload_sha256")?;
+        let stored_sequence: i64 = row.try_get("", "source_sequence")?;
+        if stored_payload == payload_sha256 && stored_sequence == event.source_sequence {
+            let outcome = StorageOutcome {
+                duplicate: true,
+                receipt_id: row.try_get("", "receipt_id")?,
+                received_at: row.try_get("", "received_at_text")?,
+            };
             transaction.commit().await?;
-            return Ok(true);
+            return Ok(outcome);
         }
         transaction.rollback().await?;
         return Err(IngestError::EventConflict);
@@ -565,7 +686,7 @@ async fn store_database(
         .query_one_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
             r#"
-            SELECT source_sequence
+            SELECT source_sequence, record_sha256
             FROM canonical_readiness_observation
             WHERE owner_subject = $1
               AND source_id = $2
@@ -578,17 +699,29 @@ async fn store_database(
             ],
         ))
         .await?;
-    if cursor
-        .map(|row| row.try_get::<i64>("", "source_sequence"))
-        .transpose()?
-        .is_some_and(|sequence| event.source_sequence <= sequence)
-    {
+    let (prior_sequence, prior_record_sha256) = match cursor {
+        Some(row) => (
+            row.try_get::<i64>("", "source_sequence")?,
+            row.try_get::<String>("", "record_sha256")?,
+        ),
+        None => (0, ZERO_RECORD_DIGEST.to_owned()),
+    };
+    let expected = prior_sequence
+        .checked_add(1)
+        .ok_or(IngestError::SequenceConflict)?;
+    if event.source_sequence != expected {
         transaction.rollback().await?;
         return Err(IngestError::SequenceConflict);
     }
 
     let event_json: JsonValue =
         serde_json::to_value(event).map_err(|_| IngestError::Internal)?;
+    let record_sha256 = record_digest(
+        &prior_record_sha256,
+        payload_sha256,
+        &event.event_id,
+        event.source_sequence,
+    );
     transaction
         .execute_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
@@ -601,15 +734,20 @@ async fn store_database(
                 organization,
                 observed_at,
                 payload_sha256,
+                prior_record_sha256,
+                record_sha256,
+                receipt_id,
                 key_id,
                 event_json,
                 raw_body_octets,
                 transport_verification,
-                substantive_review
+                substantive_review,
+                received_at
             )
             VALUES (
                 $1, $2, $3, $4, $5, CAST($6 AS timestamptz), $7, $8, $9,
-                $10, 'signature-valid', 'unreviewed'
+                $10, $11, $12, $13, 'signature-valid', 'unreviewed',
+                CAST($14 AS timestamptz)
             )
             "#,
             [
@@ -620,16 +758,24 @@ async fn store_database(
                 event.organization.clone().into(),
                 event.observed_at.clone().into(),
                 payload_sha256.to_owned().into(),
+                prior_record_sha256.into(),
+                record_sha256.into(),
+                candidate.receipt_id.clone().into(),
                 transport.key_id.clone().into(),
                 event_json.into(),
                 i64::try_from(body_len)
-                    .map_err(|_| IngestError::InvalidRequest)?
+                    .map_err(|_| IngestError::BodyTooLarge)?
                     .into(),
+                candidate.received_at.clone().into(),
             ],
         ))
         .await?;
     transaction.commit().await?;
-    Ok(false)
+    Ok(StorageOutcome {
+        duplicate: false,
+        receipt_id: candidate.receipt_id.clone(),
+        received_at: candidate.received_at.clone(),
+    })
 }
 
 async fn set_subject(
@@ -646,20 +792,22 @@ async fn set_subject(
     Ok(())
 }
 
-fn verify_content_digest(headers: &HeaderMap, body: &[u8]) -> Result<(), IngestError> {
-    let value = header(headers, "content-digest")?;
-    let encoded = value
-        .strip_prefix("sha-256=:")
-        .and_then(|value| value.strip_suffix(':'))
-        .ok_or(IngestError::InvalidDigest)?;
-    let supplied = decode_base64(encoded).map_err(|_| IngestError::InvalidDigest)?;
-    let expected = Sha256::digest(body);
-    if supplied.len() != expected.len()
-        || !bool::from(supplied.as_slice().ct_eq(expected.as_slice()))
-    {
-        return Err(IngestError::InvalidDigest);
+fn validate_content_type(headers: &HeaderMap) -> Result<(), IngestError> {
+    let value = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .ok_or(IngestError::InvalidRequest)?;
+    let media_type = value
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default();
+    if media_type.eq_ignore_ascii_case("application/json") {
+        Ok(())
+    } else {
+        Err(IngestError::InvalidRequest)
     }
-    Ok(())
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, IngestError> {
@@ -671,109 +819,97 @@ fn header<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, Ing
         .ok_or(IngestError::InvalidSignature)
 }
 
-fn require_header(
-    headers: &HeaderMap,
-    name: &'static str,
-    expected: &str,
-) -> Result<(), IngestError> {
-    if header(headers, name)? == expected {
-        Ok(())
-    } else {
-        Err(IngestError::InvalidSignature)
+fn parse_signature(value: &str) -> Result<[u8; 32], IngestError> {
+    let hex = value
+        .strip_prefix("v1=")
+        .filter(|value| value.len() == 64)
+        .ok_or(IngestError::InvalidSignature)?;
+    let bytes = hex.as_bytes();
+    let mut output = [0_u8; 32];
+    for (index, destination) in output.iter_mut().enumerate() {
+        let high = decode_nibble(bytes[index * 2]).ok_or(IngestError::InvalidSignature)?;
+        let low = decode_nibble(bytes[index * 2 + 1]).ok_or(IngestError::InvalidSignature)?;
+        *destination = (high << 4) | low;
+    }
+    Ok(output)
+}
+
+fn decode_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
     }
 }
 
-fn portable_id(value: &str) -> bool {
-    portable_name(value, 8, 128)
-}
-
-fn portable_name(value: &str, minimum: usize, maximum: usize) -> bool {
-    (minimum..=maximum).contains(&value.len())
+fn portable_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_IDENTIFIER_BYTES
         && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
         })
 }
 
 fn valid_subject(value: &str) -> bool {
-    portable_name(value, 1, 255)
+    !value.is_empty()
+        && value.len() <= 255
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
 }
 
 fn valid_sha256(value: &str) -> bool {
-    value.len() == 71
-        && value.starts_with("sha256:")
-        && value[7..]
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(is_lower_hex))
+}
+
+fn is_lower_hex(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
 
 fn parse_timestamp(value: &str) -> Result<OffsetDateTime, time::error::Parse> {
     OffsetDateTime::parse(value, &Rfc3339)
 }
 
+fn format_timestamp(value: OffsetDateTime) -> Result<String, IngestError> {
+    value.format(&Rfc3339).map_err(|_| IngestError::Internal)
+}
+
 fn sha256_label(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(71);
-    output.push_str("sha256:");
-    for byte in digest {
-        use fmt::Write as _;
-        write!(output, "{byte:02x}").expect("writing to String cannot fail");
+    format!("sha256:{}", hex_lower(&Sha256::digest(bytes)))
+}
+
+fn record_digest(
+    prior_record_sha256: &str,
+    payload_sha256: &str,
+    event_id: &str,
+    source_sequence: i64,
+) -> String {
+    let sequence = source_sequence.to_string();
+    let mut digest = Sha256::new();
+    digest.update(RECORD_DOMAIN);
+    for value in [prior_record_sha256, payload_sha256, event_id, &sequence] {
+        digest.update(value.as_bytes());
+        digest.update(b"\n");
+    }
+    format!("sha256:{}", hex_lower(&digest.finalize()))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
-}
-
-fn decode_base64(input: &str) -> Result<Vec<u8>, ()> {
-    if input.is_empty() || input.len() % 4 != 0 || !input.is_ascii() {
-        return Err(());
-    }
-    let bytes = input.as_bytes();
-    let mut output = Vec::with_capacity(input.len() / 4 * 3);
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-        let last = index + 1 == bytes.len() / 4;
-        let a = base64_value(chunk[0]).ok_or(())?;
-        let b = base64_value(chunk[1]).ok_or(())?;
-        let c_padding = chunk[2] == b'=';
-        let d_padding = chunk[3] == b'=';
-        if (!last && (c_padding || d_padding)) || (c_padding && !d_padding) {
-            return Err(());
-        }
-        let c = if c_padding {
-            0
-        } else {
-            base64_value(chunk[2]).ok_or(())?
-        };
-        let d = if d_padding {
-            0
-        } else {
-            base64_value(chunk[3]).ok_or(())?
-        };
-        output.push((a << 2) | (b >> 4));
-        if !c_padding {
-            output.push((b << 4) | (c >> 2));
-        }
-        if !d_padding {
-            output.push((c << 6) | d);
-        }
-    }
-    Ok(output)
-}
-
-fn base64_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
 }
 
 #[derive(Debug, Error)]
 pub enum BuildError {
     #[error("readiness key document is invalid")]
     InvalidKeyDocument,
-    #[error("readiness key document contains duplicate key ids")]
-    DuplicateKeyId,
     #[error("readiness webhook secret is invalid")]
     InvalidSecret,
     #[error("readiness key document is not valid UTF-8")]
@@ -786,17 +922,15 @@ pub enum BuildError {
 enum IngestError {
     #[error("readiness observation request is invalid")]
     InvalidRequest,
-    #[error("content digest is invalid")]
-    InvalidDigest,
-    #[error("webhook signature is invalid")]
+    #[error("readiness observation body is too large")]
+    BodyTooLarge,
+    #[error("webhook authentication failed")]
     InvalidSignature,
     #[error("webhook timestamp is outside the replay window")]
     StaleSignature,
-    #[error("readiness source is not configured")]
-    UnknownSource,
     #[error("event id was reused with different content")]
     EventConflict,
-    #[error("source sequence is not strictly increasing")]
+    #[error("source sequence must be the next contiguous value")]
     SequenceConflict,
     #[error("readiness observation storage is unavailable")]
     StorageUnavailable,
@@ -819,25 +953,20 @@ impl From<IngestError> for IngestProblem {
                 "invalid-request",
                 "readiness observation request is invalid",
             ),
-            IngestError::InvalidDigest => (
-                StatusCode::BAD_REQUEST,
-                "invalid-digest",
-                "content digest is invalid",
+            IngestError::BodyTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid-request",
+                "readiness observation body exceeds the configured limit",
             ),
             IngestError::InvalidSignature => (
                 StatusCode::UNAUTHORIZED,
                 "invalid-signature",
-                "webhook signature is invalid",
+                "webhook authentication failed",
             ),
             IngestError::StaleSignature => (
                 StatusCode::UNAUTHORIZED,
                 "stale-signature",
                 "webhook timestamp is outside the replay window",
-            ),
-            IngestError::UnknownSource => (
-                StatusCode::UNAUTHORIZED,
-                "unknown-source",
-                "readiness source is not configured",
             ),
             IngestError::EventConflict => (
                 StatusCode::CONFLICT,
@@ -847,7 +976,7 @@ impl From<IngestError> for IngestProblem {
             IngestError::SequenceConflict => (
                 StatusCode::CONFLICT,
                 "sequence-conflict",
-                "source sequence is not strictly increasing",
+                "source sequence must be the next contiguous value",
             ),
             IngestError::StorageUnavailable | IngestError::Database(_) => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -891,31 +1020,7 @@ struct ObservationProblem {
 mod tests {
     use super::*;
 
-    const SECRET_BYTES: &[u8] = b"0123456789abcdef0123456789abcdef";
-
-    fn encode_base64(input: &[u8]) -> String {
-        const ALPHABET: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
-        for chunk in input.chunks(3) {
-            let a = chunk[0];
-            let b = *chunk.get(1).unwrap_or(&0);
-            let c = *chunk.get(2).unwrap_or(&0);
-            output.push(ALPHABET[(a >> 2) as usize] as char);
-            output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
-            if chunk.len() > 1 {
-                output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
-            } else {
-                output.push('=');
-            }
-            if chunk.len() > 2 {
-                output.push(ALPHABET[(c & 0x3f) as usize] as char);
-            } else {
-                output.push('=');
-            }
-        }
-        output
-    }
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
 
     fn event(sequence: i64) -> ObservationEvent {
         ObservationEvent {
@@ -923,7 +1028,7 @@ mod tests {
             event_id: format!("event.test.{sequence:08}"),
             source_id: "source.customer-ci".into(),
             source_sequence: sequence,
-            organization: "Example Incorporated".into(),
+            organization: "org:example".into(),
             observed_at: "2026-09-09T05:00:00Z".into(),
             assertions: vec![ObservationAssertion {
                 framework_id: "soc2-tsc".into(),
@@ -946,33 +1051,27 @@ mod tests {
 
     fn service() -> ObservationService {
         let document = format!(
-            r#"{{"keys":[{{"keyId":"key.customer-ci","sourceId":"source.customer-ci","organization":"Example Incorporated","ownerSubject":"org:example","secret":"whsec_{}"}}]}}"#,
-            encode_base64(SECRET_BYTES)
+            r#"{{"keys":[{{"keyId":"key.customer-ci","sourceId":"source.customer-ci","organization":"org:example","ownerSubject":"org:example","secret":"{SECRET}"}}]}}"#
         );
         ObservationService::with_key_document(&document).unwrap()
     }
 
     fn signed_headers(body: &[u8], event_id: &str, timestamp: i64) -> HeaderMap {
         let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("x-canonical-webhook-id", event_id.parse().unwrap());
         headers.insert(
-            "content-digest",
-            format!("sha-256=:{}:", encode_base64(&Sha256::digest(body)))
-                .parse()
-                .unwrap(),
+            "x-canonical-webhook-timestamp",
+            timestamp.to_string().parse().unwrap(),
         );
-        headers.insert("webhook-id", event_id.parse().unwrap());
-        headers.insert("idempotency-key", event_id.parse().unwrap());
-        headers.insert("webhook-key-id", "key.customer-ci".parse().unwrap());
-        headers.insert("webhook-timestamp", timestamp.to_string().parse().unwrap());
-        let mut mac = HmacSha256::new_from_slice(SECRET_BYTES).unwrap();
-        mac.update(event_id.as_bytes());
-        mac.update(b".");
-        mac.update(timestamp.to_string().as_bytes());
+        let timestamp_text = timestamp.to_string();
+        let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+        mac.update(timestamp_text.as_bytes());
         mac.update(b".");
         mac.update(body);
         headers.insert(
-            "webhook-signature",
-            format!("v1,{}", encode_base64(&mac.finalize().into_bytes()))
+            "x-canonical-webhook-signature",
+            format!("v1={}", hex_lower(&mac.finalize().into_bytes()))
                 .parse()
                 .unwrap(),
         );
@@ -980,10 +1079,10 @@ mod tests {
     }
 
     #[test]
-    fn base64_decoder_rejects_malformed_padding() {
-        assert_eq!(decode_base64("YQ==").unwrap(), b"a");
-        assert!(decode_base64("Y=Q=").is_err());
-        assert!(decode_base64("YQ=").is_err());
+    fn signature_parser_rejects_noncanonical_hex() {
+        assert!(parse_signature(&format!("v1={}", "a".repeat(64))).is_ok());
+        assert!(parse_signature(&format!("v1={}", "A".repeat(64))).is_err());
+        assert!(parse_signature("v1=short").is_err());
     }
 
     #[test]
@@ -1005,20 +1104,56 @@ mod tests {
         assert!(validate_locator("https://example.com/object?token=secret").is_err());
     }
 
+    #[test]
+    fn record_digest_chains_prior_and_payload_state() {
+        let first = record_digest(
+            ZERO_RECORD_DIGEST,
+            &format!("sha256:{}", "a".repeat(64)),
+            "event.test.00000001",
+            1,
+        );
+        let changed_prior = record_digest(
+            &format!("sha256:{}", "b".repeat(64)),
+            &format!("sha256:{}", "a".repeat(64)),
+            "event.test.00000001",
+            1,
+        );
+        assert!(valid_sha256(&first));
+        assert_ne!(first, changed_prior);
+    }
+
     #[tokio::test]
-    async fn exact_replay_is_duplicate_but_event_mutation_conflicts() {
+    async fn exact_replay_returns_the_original_receipt() {
         let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
+        let service = service();
         let candidate = event(1);
         let body = serde_json::to_vec(&candidate).unwrap();
         let headers = signed_headers(&body, &candidate.event_id, now.unix_timestamp());
-        let first = service().ingest(&headers, &body, now).await.unwrap();
-        assert!(!first.duplicate);
-
-        let service = service();
-        let first = service.ingest(&headers, &body, now).await.unwrap();
-        let second = service.ingest(&headers, &body, now).await.unwrap();
+        let first = service
+            .ingest(&candidate.source_id, &headers, &body, now)
+            .await
+            .unwrap();
+        let second = service
+            .ingest(&candidate.source_id, &headers, &body, now)
+            .await
+            .unwrap();
         assert!(!first.duplicate);
         assert!(second.duplicate);
+        assert_eq!(first.receipt_id, second.receipt_id);
+        assert_eq!(first.received_at, second.received_at);
+    }
+
+    #[tokio::test]
+    async fn event_mutation_conflicts() {
+        let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
+        let service = service();
+        let candidate = event(1);
+        let body = serde_json::to_vec(&candidate).unwrap();
+        let headers = signed_headers(&body, &candidate.event_id, now.unix_timestamp());
+        service
+            .ingest(&candidate.source_id, &headers, &body, now)
+            .await
+            .unwrap();
 
         let mut altered = candidate;
         altered.assertions[0].reported_status = ReportedStatus::Unknown;
@@ -1026,25 +1161,45 @@ mod tests {
         let altered_headers =
             signed_headers(&altered_body, &altered.event_id, now.unix_timestamp());
         assert!(matches!(
-            service.ingest(&altered_headers, &altered_body, now).await,
+            service
+                .ingest(
+                    &altered.source_id,
+                    &altered_headers,
+                    &altered_body,
+                    now
+                )
+                .await,
             Err(IngestError::EventConflict)
         ));
     }
 
     #[tokio::test]
-    async fn source_sequence_must_increase() {
+    async fn sequence_must_begin_at_one_and_remain_contiguous() {
         let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
         let service = service();
-        let first = event(2);
-        let first_body = serde_json::to_vec(&first).unwrap();
-        let first_headers = signed_headers(&first_body, &first.event_id, now.unix_timestamp());
-        service.ingest(&first_headers, &first_body, now).await.unwrap();
-
-        let stale = event(1);
-        let stale_body = serde_json::to_vec(&stale).unwrap();
-        let stale_headers = signed_headers(&stale_body, &stale.event_id, now.unix_timestamp());
+        let skipped_first = event(2);
+        let body = serde_json::to_vec(&skipped_first).unwrap();
+        let headers = signed_headers(&body, &skipped_first.event_id, now.unix_timestamp());
         assert!(matches!(
-            service.ingest(&stale_headers, &stale_body, now).await,
+            service
+                .ingest(&skipped_first.source_id, &headers, &body, now)
+                .await,
+            Err(IngestError::SequenceConflict)
+        ));
+
+        let first = event(1);
+        let body = serde_json::to_vec(&first).unwrap();
+        let headers = signed_headers(&body, &first.event_id, now.unix_timestamp());
+        service
+            .ingest(&first.source_id, &headers, &body, now)
+            .await
+            .unwrap();
+
+        let gap = event(3);
+        let body = serde_json::to_vec(&gap).unwrap();
+        let headers = signed_headers(&body, &gap.event_id, now.unix_timestamp());
+        assert!(matches!(
+            service.ingest(&gap.source_id, &headers, &body, now).await,
             Err(IngestError::SequenceConflict)
         ));
     }
@@ -1056,8 +1211,29 @@ mod tests {
         let body = serde_json::to_vec(&candidate).unwrap();
         let headers = signed_headers(&body, &candidate.event_id, 1_788_927_600);
         assert!(matches!(
-            service().ingest(&headers, &body, now).await,
+            service()
+                .ingest(&candidate.source_id, &headers, &body, now)
+                .await,
             Err(IngestError::StaleSignature)
+        ));
+    }
+
+    #[tokio::test]
+    async fn production_service_fails_closed_without_durable_storage() {
+        let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
+        let document = format!(
+            r#"{{"keys":[{{"keyId":"key.customer-ci","sourceId":"source.customer-ci","organization":"org:example","ownerSubject":"org:example","secret":"{SECRET}"}}]}}"#
+        );
+        let mut service = ObservationService::with_key_document(&document).unwrap();
+        service.allow_memory = false;
+        let candidate = event(1);
+        let body = serde_json::to_vec(&candidate).unwrap();
+        let headers = signed_headers(&body, &candidate.event_id, now.unix_timestamp());
+        assert!(matches!(
+            service
+                .ingest(&candidate.source_id, &headers, &body, now)
+                .await,
+            Err(IngestError::StorageUnavailable)
         ));
     }
 }
