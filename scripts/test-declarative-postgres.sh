@@ -119,12 +119,13 @@ test "$(
         'canonical_quote',
         'canonical_quote_operation',
         'canonical_quote_event',
-        'canonical_model_attempt'
+        'canonical_model_attempt',
+        'canonical_readiness_observation'
       )
       AND relation.relrowsecurity
       AND relation.relforcerowsecurity
   "
-)" = "5"
+)" = "6"
 
 test "$(
   psql "$TARGET_ADMIN_URL" -Atqc "
@@ -153,7 +154,11 @@ test "$(
     )::int
   "
 )" = "0"
-for table in canonical_quote canonical_quote_operation; do
+for table in \
+  canonical_quote \
+  canonical_quote_operation \
+  canonical_readiness_observation
+do
   test "$(
     psql "$TARGET_ADMIN_URL" -Atqc "
       SELECT has_table_privilege(
@@ -186,6 +191,32 @@ test "$(
       has_table_privilege(
         'canonical_cloud__quote__api_rw',
         'canonical_cloud__quote.canonical_quote_operation',
+        'DELETE'
+      )::int
+  "
+)" = "1:1:0:0"
+
+test "$(
+  psql "$TARGET_ADMIN_URL" -Atqc "
+    SELECT
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'SELECT'
+      )::int || ':' ||
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'INSERT'
+      )::int || ':' ||
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'UPDATE'
+      )::int || ':' ||
+      has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
         'DELETE'
       )::int
   "
@@ -244,6 +275,40 @@ VALUES (
     '11111111-1111-4111-8111-111111111111',
     '{"organizationName":"Owner A","frameworks":["soc2_type_2"]}'::jsonb
 );
+INSERT INTO canonical_cloud__quote.canonical_readiness_observation (
+    owner_subject,
+    source_id,
+    event_id,
+    source_sequence,
+    organization,
+    observed_at,
+    payload_sha256,
+    prior_record_sha256,
+    record_sha256,
+    receipt_id,
+    key_id,
+    event_json,
+    raw_body_octets,
+    transport_verification,
+    substantive_review
+)
+VALUES (
+    'owner-a',
+    'source.customer-ci',
+    'event.test.00000001',
+    1,
+    'org:owner-a',
+    '2026-09-09T05:00:00Z',
+    'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'rcpt_test_owner_a_0001',
+    'key.customer-ci',
+    '{"specVersion":"canonical.readiness.observation.v1"}'::jsonb,
+    1024,
+    'signature-valid',
+    'unreviewed'
+);
 COMMIT;
 
 BEGIN;
@@ -281,6 +346,16 @@ BEGIN;
 SET LOCAL app.current_subject = 'owner-b';
 SELECT count(*)
 FROM canonical_cloud__quote.canonical_quote_operation;
+COMMIT;
+SQL
+)" = "0"
+
+test "$(
+  psql "$API_URL" -Atq <<'SQL'
+BEGIN;
+SET LOCAL app.current_subject = 'owner-b';
+SELECT count(*)
+FROM canonical_cloud__quote.canonical_readiness_observation;
 COMMIT;
 SQL
 )" = "0"
@@ -332,6 +407,60 @@ test "$invalid_idempotency_status" -ne 0
 grep -Eqi 'check constraint|violates' "$ARTIFACTS/invalid-idempotency.err"
 
 set +e
+psql "$API_URL" -v ON_ERROR_STOP=1 >/dev/null 2>"$ARTIFACTS/duplicate-source-sequence.err" <<'SQL'
+BEGIN;
+SET LOCAL app.current_subject = 'owner-a';
+INSERT INTO canonical_cloud__quote.canonical_readiness_observation (
+    owner_subject,
+    source_id,
+    event_id,
+    source_sequence,
+    organization,
+    observed_at,
+    payload_sha256,
+    prior_record_sha256,
+    record_sha256,
+    receipt_id,
+    key_id,
+    event_json,
+    raw_body_octets,
+    transport_verification,
+    substantive_review
+)
+VALUES (
+    'owner-a',
+    'source.customer-ci',
+    'event.test.duplicate',
+    1,
+    'org:owner-a',
+    '2026-09-09T05:00:01Z',
+    'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    'rcpt_test_owner_a_duplicate',
+    'key.customer-ci',
+    '{"specVersion":"canonical.readiness.observation.v1"}'::jsonb,
+    1024,
+    'signature-valid',
+    'unreviewed'
+);
+COMMIT;
+SQL
+duplicate_source_sequence_status=$?
+set -e
+test "$duplicate_source_sequence_status" -ne 0
+grep -Eqi 'unique constraint|duplicate key|violates' "$ARTIFACTS/duplicate-source-sequence.err"
+
+set +e
+psql "$API_URL" -v ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM canonical_cloud__quote.canonical_quote" \
+  >/dev/null 2>"$ARTIFACTS/web-read.err"
+web_read_status=$?
+set -e
+# The command above intentionally uses the API role and therefore must work.
+test "$web_read_status" -eq 0
+
+set +e
 psql "$WEB_URL" -v ON_ERROR_STOP=1 \
   -c "SELECT count(*) FROM canonical_cloud__quote.canonical_quote" \
   >/dev/null 2>"$ARTIFACTS/web-read.err"
@@ -348,6 +477,15 @@ operation_update_status=$?
 set -e
 test "$operation_update_status" -ne 0
 grep -Eqi 'permission denied|no permission' "$ARTIFACTS/operation-update.err"
+
+set +e
+psql "$API_URL" -v ON_ERROR_STOP=1 \
+  -c "UPDATE canonical_cloud__quote.canonical_readiness_observation SET substantive_review = 'accepted-as-evidence'" \
+  >/dev/null 2>"$ARTIFACTS/observation-update.err"
+observation_update_status=$?
+set -e
+test "$observation_update_status" -ne 0
+grep -Eqi 'permission denied|no permission' "$ARTIFACTS/observation-update.err"
 
 set +e
 psql "$API_URL" -v ON_ERROR_STOP=1 \
@@ -387,6 +525,12 @@ test "$(
   psql "$TARGET_ADMIN_URL" -Atqc "
     SELECT count(*)
     FROM canonical_cloud__quote.canonical_quote_operation
+  "
+)" = "1"
+test "$(
+  psql "$TARGET_ADMIN_URL" -Atqc "
+    SELECT count(*)
+    FROM canonical_cloud__quote.canonical_readiness_observation
   "
 )" = "1"
 
@@ -459,5 +603,13 @@ test "$(
     WHERE idempotency_key = 'quote:test-owner-a'
   "
 )" = "1"
+test "$(
+  psql "$TARGET_ADMIN_URL" -Atqc "
+    SELECT count(*)
+    FROM canonical_cloud__quote.canonical_readiness_observation
+    WHERE receipt_id = 'rcpt_test_owner_a_0001'
+      AND substantive_review = 'unreviewed'
+  "
+)" = "1"
 
-echo "Canonical quote PostgreSQL declarative certification passed"
+echo "Canonical quote and readiness PostgreSQL declarative certification passed"
