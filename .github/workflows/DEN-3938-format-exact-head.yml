@@ -1,0 +1,62 @@
+name: DEN-3938 exact-head rustfmt
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/DEN-3938-format-exact-head.yml"
+      - "src/frameworks.rs"
+      - "src/readiness_observation_ingest.rs"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3938-rustfmt-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_BRANCH: ${{ github.head_ref }}
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+
+      - name: Verify checked-out revision
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install pinned Rust formatter
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Format and commit only the admitted paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --check
+
+          if git diff --quiet; then
+            echo "exact head is already formatted"
+            exit 0
+          fi
+
+          changed="$(git diff --name-only | LC_ALL=C sort)"
+          expected="$(printf '%s\n' src/frameworks.rs src/readiness_observation_ingest.rs | LC_ALL=C sort)"
+          test "$changed" = "$expected"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src/frameworks.rs src/readiness_observation_ingest.rs
+          git diff --cached --name-only | LC_ALL=C sort | diff -u <(printf '%s\n' src/frameworks.rs src/readiness_observation_ingest.rs | LC_ALL=C sort) -
+          git commit -m 'style(DEN-3938): apply rustfmt to readiness ingress'
+          git push origin "HEAD:refs/heads/${HEAD_BRANCH}"
