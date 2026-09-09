@@ -1,0 +1,121 @@
+name: readiness-observation-contract-and-storage
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/readiness-observation.yml"
+      - "db/readiness-observation-*.sql"
+      - "docs/readiness-observations.md"
+      - "scripts/verify-readiness-contract-binding.py"
+      - "src/main.rs"
+      - "src/readiness_observation_ingest.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/readiness-observation.yml"
+      - "db/readiness-observation-*.sql"
+      - "docs/readiness-observations.md"
+      - "scripts/verify-readiness-contract-binding.py"
+      - "src/main.rs"
+      - "src/readiness_observation_ingest.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readiness-observation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract-and-storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out exact server head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify checked-out server revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Check out admitted Canonical interfaces
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: canonical-cloud/canonical-interfaces
+          ref: 1af61c7d6e70c675fbb6fc9fd5fe85a1881a6a0d
+          path: .contracts/canonical-interfaces
+          persist-credentials: false
+      - name: Verify exact interface revision
+        run: >-
+          test "$(git -C .contracts/canonical-interfaces rev-parse HEAD)" =
+          "1af61c7d6e70c675fbb6fc9fd5fe85a1881a6a0d"
+      - name: Re-admit peer TypeSpec and JSON Schema authorities
+        uses: ORESoftware/typespec-json-schema-validator@3171025cbe03a7026a71ce94eea18c910e1431b2
+        with:
+          typespec: .contracts/canonical-interfaces/contracts/readiness-observation/v1/main.tsp
+          schema: .contracts/canonical-interfaces/contracts/readiness-observation/v1/authored.schema.json
+          instances: .contracts/canonical-interfaces/contracts/readiness-observation/v1/instances
+          report: artifacts/readiness-observation/tjsv-report.json
+          sarif: artifacts/readiness-observation/tjsv.sarif
+          contract_ir: artifacts/readiness-observation/contract-ir.json
+          output_dir: artifacts/readiness-observation/generated
+          int64_strategy: number
+          max_probes: "96"
+      - name: Verify Rust binding against admitted contract
+        run: python3 scripts/verify-readiness-contract-binding.py
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Test and lint the exact locked Rust graph
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+      - name: Prove append-only PostgreSQL role and RLS boundaries
+        env:
+          PGURL: postgres://postgres@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          psql "$PGURL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE canonical_cloud__quote__migrator NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE canonical_cloud__quote__api_rw LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          \i db/readiness-observation-schema.sql
+          \i db/readiness-observation-grants.sql
+          SQL
+          test "$(psql "$PGURL" -Atc "SELECT relrowsecurity AND relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='canonical_cloud__readiness' AND c.relname='observation'")" = "t"
+          test "$(psql "$PGURL" -Atc "SELECT has_table_privilege('canonical_cloud__quote__api_rw','canonical_cloud__readiness.observation','SELECT') AND has_table_privilege('canonical_cloud__quote__api_rw','canonical_cloud__readiness.observation','INSERT') AND NOT has_table_privilege('canonical_cloud__quote__api_rw','canonical_cloud__readiness.observation','UPDATE') AND NOT has_table_privilege('canonical_cloud__quote__api_rw','canonical_cloud__readiness.observation','DELETE') AND NOT has_table_privilege('canonical_cloud__quote__api_rw','canonical_cloud__readiness.observation','TRUNCATE')")" = "t"
+      - name: Retain TJSV and storage evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: readiness-observation-${{ github.run_id }}
+          path: artifacts/readiness-observation
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod readiness;
+mod readiness_observation_ingest;
 mod shutdown;
 mod telemetry;
 
@@ -34,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
     let readiness_database = database.clone();
+    let readiness_observation_router = readiness_observation_ingest::router(database.clone())?;
     let database_configured = database.is_some();
     let gemini_configured = config.gemini_api_key.is_some();
 
@@ -59,12 +61,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = build_router(state).merge(readiness::router(readiness_database));
+    let app = build_router(state)
+        .merge(readiness::router(readiness_database))
+        .merge(readiness_observation_router);
     info!(
         address = %config.bind_address,
         database_configured,
         gemini_configured,
         gemini_model = %config.gemini_model,
+        readiness_ingest_keyring_env = readiness_observation_ingest::KEYRING_ENV,
         "canonical API listening"
     );
     let outcome = shutdown::serve(
