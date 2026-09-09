@@ -8,7 +8,7 @@ This service can receive signed readiness observations from a customer-controlle
 
 ## Contract authority
 
-The portable wire contract is owned by `canonical-cloud/canonical-interfaces` at immutable commit `bed2ceab306787f88d745c261f4eede2cf7b48bd`:
+The portable wire contract is owned by `canonical-cloud/canonical-interfaces` at immutable commit `bed2dacd7ccd8242ed4fba4d077b84a01a55e343`:
 
 - `contracts/readiness-observation/v1/main.tsp`
 - `contracts/readiness-observation/v1/authored.schema.json`
