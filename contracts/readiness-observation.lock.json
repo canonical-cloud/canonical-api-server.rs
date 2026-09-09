@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "contract": "canonical.readiness.observation.v1",
+  "authority": {
+    "repository": "canonical-cloud/canonical-interfaces",
+    "commit": "bed2ceab306787f88d745c261f4eede2cf7b48bd",
+    "admittedHead": "c8e4d8dba6c2ac7820aff0bd06b28e27241364b0",
+    "typespec": "contracts/readiness-observation/v1/main.tsp",
+    "jsonSchema": "contracts/readiness-observation/v1/authored.schema.json",
+    "instances": "contracts/readiness-observation/v1/instances",
+    "authoritiesPrecedence": "none",
+    "editableAuthority": false
+  },
+  "validator": {
+    "repository": "ORESoftware/typespec-json-schema-validator",
+    "commit": "3171025cbe03a7026a71ce94eea18c910e1431b2",
+    "requiredStatus": "passed",
+    "zeroUnexplainedFindings": true,
+    "contractIrAdmissible": true
+  },
+  "runtimeProjection": {
+    "language": "rust",
+    "module": "src/readiness_observation_ingest.rs",
+    "transport": "application/json",
+    "unknownFields": "deny",
+    "initialSubstantiveReview": "unreviewed"
+  },
+  "linear": "DEN-3938"
+}
