@@ -32,7 +32,7 @@ search_path_contract AS (
     ]::name[] AS ok
 ),
 object_ownership AS (
-    SELECT count(*) = 6 AS ok
+    SELECT count(*) = 7 AS ok
     FROM pg_class AS relation
     JOIN pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
@@ -42,7 +42,7 @@ object_ownership AS (
           = 'canonical_cloud__quote__migrator'
 ),
 rls_tables AS (
-    SELECT count(*) = 5 AS ok
+    SELECT count(*) = 6 AS ok
     FROM pg_class AS relation
     JOIN pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
@@ -52,14 +52,15 @@ rls_tables AS (
           'canonical_quote',
           'canonical_quote_operation',
           'canonical_quote_event',
-          'canonical_model_attempt'
+          'canonical_model_attempt',
+          'canonical_readiness_observation'
       )
       AND relation.relkind IN ('r', 'p')
       AND relation.relrowsecurity
       AND relation.relforcerowsecurity
 ),
 owner_policies AS (
-    SELECT count(*) = 5 AS ok
+    SELECT count(*) = 6 AS ok
     FROM pg_policies
     WHERE schemaname = 'canonical_cloud__quote'
       AND policyname IN (
@@ -67,11 +68,12 @@ owner_policies AS (
           'canonical_quote_owner_policy',
           'canonical_quote_operation_owner_policy',
           'canonical_quote_event_owner_policy',
-          'canonical_model_attempt_owner_policy'
+          'canonical_model_attempt_owner_policy',
+          'canonical_readiness_observation_owner_policy'
       )
 ),
 required_constraints AS (
-    SELECT count(*) = 17 AS ok
+    SELECT count(*) = 32 AS ok
     FROM pg_constraint
     WHERE connamespace = (
         SELECT oid
@@ -95,7 +97,22 @@ required_constraints AS (
           'canonical_quote_event_quote_owner_fk',
           'canonical_model_attempt_status_finished_check',
           'canonical_model_attempt_time_order_check',
-          'canonical_model_attempt_quote_owner_fk'
+          'canonical_model_attempt_quote_owner_fk',
+          'canonical_readiness_observation_owner_source_event_pk',
+          'canonical_readiness_observation_owner_source_sequence_unique',
+          'canonical_readiness_observation_receipt_id_unique',
+          'canonical_readiness_observation_source_id_check',
+          'canonical_readiness_observation_event_id_check',
+          'canonical_readiness_observation_source_sequence_check',
+          'canonical_readiness_observation_payload_sha256_check',
+          'canonical_readiness_observation_prior_record_sha256_check',
+          'canonical_readiness_observation_record_sha256_check',
+          'canonical_readiness_observation_receipt_id_check',
+          'canonical_readiness_observation_key_id_check',
+          'canonical_readiness_observation_event_json_object_check',
+          'canonical_readiness_observation_raw_body_octets_check',
+          'canonical_readiness_observation_transport_verification_check',
+          'canonical_readiness_observation_substantive_review_check'
       )
       AND convalidated
 ),
@@ -118,6 +135,9 @@ required_indexes AS (
         ) IS NOT NULL
         AND to_regclass(
             'canonical_cloud__quote.canonical_model_attempt_quote_started_idx'
+        ) IS NOT NULL
+        AND to_regclass(
+            'canonical_cloud__quote.canonical_readiness_observation_owner_received_idx'
         ) IS NOT NULL AS ok
 ),
 runtime_privileges AS (
@@ -262,6 +282,31 @@ runtime_privileges AS (
             'canonical_cloud__quote.canonical_model_attempt',
             'TRUNCATE'
         )
+        AND has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_readiness_observation',
+            'SELECT'
+        )
+        AND has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_readiness_observation',
+            'INSERT'
+        )
+        AND NOT has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_readiness_observation',
+            'UPDATE'
+        )
+        AND NOT has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_readiness_observation',
+            'DELETE'
+        )
+        AND NOT has_table_privilege(
+            current_user,
+            'canonical_cloud__quote.canonical_readiness_observation',
+            'TRUNCATE'
+        )
         AND has_sequence_privilege(
             current_user,
             'canonical_cloud__quote.canonical_quote_event_sequence_id_seq',
@@ -333,7 +378,7 @@ async fn readiness(database: Option<DatabaseConnection>) -> Response {
             );
             not_ready(
                 "database_not_ready",
-                "PostgreSQL is reachable but the quote schema or runtime role is not ready",
+                "PostgreSQL is reachable but the quote/readiness schema or runtime role is not ready",
             )
         }
     }
@@ -356,7 +401,7 @@ async fn check_database(database: &DatabaseConnection) -> Result<(), DbErr> {
 
     if !row.try_get::<bool>("", "ready")? {
         return Err(DbErr::Custom(
-            "quote namespace, role, ownership, RLS, constraints, indexes, or grants are incomplete"
+            "quote/readiness namespace, role, ownership, RLS, constraints, indexes, or grants are incomplete"
                 .into(),
         ));
     }
@@ -388,6 +433,9 @@ mod tests {
             "canonical_model_attempt_quote_owner_fk",
             "canonical_model_attempt_status_finished_check",
             "canonical_context_one_active_per_owner_idx",
+            "canonical_readiness_observation_owner_policy",
+            "canonical_readiness_observation_owner_received_idx",
+            "canonical_readiness_observation_substantive_review_check",
             "rolbypassrls",
             "has_table_privilege",
         ] {
