@@ -51,7 +51,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: canonical-cloud/canonical-interfaces
-          ref: bed2ceab306787f88d745c261f4eede2cf7b48bd
+          ref: bed2dacd7ccd8242ed4fba4d077b84a01a55e343
           path: vendor/canonical-interfaces
           fetch-depth: 1
           persist-credentials: false
@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C vendor/canonical-interfaces rev-parse HEAD)" = \
-            "bed2ceab306787f88d745c261f4eede2cf7b48bd"
+            "bed2dacd7ccd8242ed4fba4d077b84a01a55e343"
 
       - name: Re-run TypeSpec and JSON Schema peer-authority admission
         uses: ORESoftware/typespec-json-schema-validator@3171025cbe03a7026a71ce94eea18c910e1431b2
