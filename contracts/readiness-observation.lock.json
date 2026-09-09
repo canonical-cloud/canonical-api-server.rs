@@ -3,7 +3,7 @@
   "contract": "canonical.readiness.observation.v1",
   "authority": {
     "repository": "canonical-cloud/canonical-interfaces",
-    "commit": "bed2ceab306787f88d745c261f4eede2cf7b48bd",
+    "commit": "bed2dacd7ccd8242ed4fba4d077b84a01a55e343",
     "admittedHead": "c8e4d8dba6c2ac7820aff0bd06b28e27241364b0",
     "typespec": "contracts/readiness-observation/v1/main.tsp",
     "jsonSchema": "contracts/readiness-observation/v1/authored.schema.json",
