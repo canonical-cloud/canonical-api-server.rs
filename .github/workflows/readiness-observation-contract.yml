@@ -1,0 +1,108 @@
+name: readiness-observation-contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/readiness-observation-contract.yml"
+      - "contracts/readiness-observation.lock.json"
+      - "scripts/verify-readiness-observation-contract.py"
+      - "src/readiness_observation_ingest.rs"
+      - "src/main.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "db/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/readiness-observation-contract.yml"
+      - "contracts/readiness-observation.lock.json"
+      - "scripts/verify-readiness-observation-contract.py"
+      - "src/readiness_observation_ingest.rs"
+      - "src/main.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "db/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readiness-observation-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact API candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify API candidate revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Check out admitted interface authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: canonical-cloud/canonical-interfaces
+          ref: bed2ceab306787f88d745c261f4eede2cf7b48bd
+          path: vendor/canonical-interfaces
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact authority revision
+        run: |
+          set -euo pipefail
+          test "$(git -C vendor/canonical-interfaces rev-parse HEAD)" = \
+            "bed2ceab306787f88d745c261f4eede2cf7b48bd"
+
+      - name: Re-run TypeSpec and JSON Schema peer-authority admission
+        uses: ORESoftware/typespec-json-schema-validator@3171025cbe03a7026a71ce94eea18c910e1431b2
+        with:
+          typespec: vendor/canonical-interfaces/contracts/readiness-observation/v1/main.tsp
+          schema: vendor/canonical-interfaces/contracts/readiness-observation/v1/authored.schema.json
+          instances: vendor/canonical-interfaces/contracts/readiness-observation/v1/instances
+          report: .typespec-json-schema-validator/readiness-observation-report.json
+          sarif: .typespec-json-schema-validator/readiness-observation.sarif
+          contract_ir: .typespec-json-schema-validator/readiness-observation.contract-ir.json
+          output_dir: .typespec-json-schema-validator/readiness-observation-generated
+          int64_strategy: number
+          max_probes: "96"
+
+      - name: Verify the Rust projection and immutable provenance
+        run: python3 scripts/verify-readiness-observation-contract.py
+
+      - name: Verify admissible TJSV evidence
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync(".typespec-json-schema-validator/readiness-observation-report.json", "utf8"));
+          const ir = JSON.parse(readFileSync(".typespec-json-schema-validator/readiness-observation.contract-ir.json", "utf8"));
+          assert.equal(report.schema, "ores.typespec-json-schema-validator.report/v1");
+          assert.equal(report.status, "passed");
+          assert.equal(report.zeroUnexplainedFindings, true);
+          assert.deepEqual(report.findings, []);
+          assert.equal(ir.status, "passed");
+          assert.equal(ir.admissible, true);
+          assert.equal(ir.editableAuthority, false);
+          assert.equal(ir.authorities.precedence, "none");
+          assert.equal(ir.admission.receipt.runId, report.runId);
+          NODE
+
+      - name: Retain contract receipt, Contract IR, SARIF and witness
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readiness-observation-contract-${{ github.run_id }}
+          path: .typespec-json-schema-validator/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
