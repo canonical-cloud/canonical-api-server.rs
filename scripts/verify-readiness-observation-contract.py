@@ -11,7 +11,7 @@ LOCK_PATH = ROOT / "contracts/readiness-observation.lock.json"
 MODULE_PATH = ROOT / "src/readiness_observation_ingest.rs"
 WORKFLOW_PATH = ROOT / ".github/workflows/readiness-observation-contract.yml"
 
-EXPECTED_AUTHORITY_COMMIT = "bed2ceab306787f88d745c261f4eede2cf7b48bd"
+EXPECTED_AUTHORITY_COMMIT = "bed2dacd7ccd8242ed4fba4d077b84a01a55e343"
 EXPECTED_ADMITTED_HEAD = "c8e4d8dba6c2ac7820aff0bd06b28e27241364b0"
 EXPECTED_TJSV_COMMIT = "3171025cbe03a7026a71ce94eea18c910e1431b2"
 
