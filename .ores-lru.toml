@@ -1,0 +1,21 @@
+protocol = "ores.lru-config.v1"
+namespace = "canonical-cloud"
+roles = ["server"]
+
+[redis]
+urlEnv = "REDIS_URL"
+keyPrefix = "ores:lru:canonical-cloud"
+pubsubChannel = "ores:lru:canonical-cloud:events"
+reconcileIntervalMs = 180000
+reconnectMinMs = 1000
+reconnectMaxMs = 30000
+
+[defaults]
+capacity = 1024
+syncMode = "read_only"
+overflowMode = "reject_and_reconcile"
+failOpenOnStartup = false
+
+[[caches]]
+name = "runtime-env"
+role = "server"
