@@ -1,0 +1,10 @@
+# TJSV-admitted ORES middleware orchestration.
+# Server middleware is deliberately disabled until a repo-specific stack JSON is admitted.
+schema_version = 1
+repository_mode = "server-only"
+
+[[targets]]
+name = "server"
+role = "server"
+roots = ["."]
+middleware = "disabled"
