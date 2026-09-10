@@ -1,0 +1,40 @@
+[identity]
+service = "canonical-api-server"
+type_name = "RuntimeEnv"
+
+[help]
+url = "https://github.com/flags-2-env/flags-2-env"
+
+[parse]
+allow_unknown = false
+
+[env]
+load = false
+ignore = ["DATABASE_URL", "REDIS_URL", "SHARED_AUTH_SERVICE_CREDENTIAL", "OTEL_EXPORTER_OTLP_HEADERS"]
+
+[flags.config]
+env = "CANONICAL_CONFIG"
+long = "config"
+type = "string"
+help = "Path to runtime configuration."
+
+[flags.otel-service-name]
+env = "ORES_OTEL_SERVICE_NAME"
+long = "otel-service-name"
+type = "string"
+default = "canonical-api-server"
+help = "Non-secret OpenTelemetry service name."
+
+[flags.rust-log]
+env = "RUST_LOG"
+long = "rust-log"
+type = "string"
+default = "info"
+help = "Structured logging filter."
+
+[flags.otel-sample-ratio]
+env = "ORES_OTEL_SAMPLE_RATIO"
+long = "otel-sample-ratio"
+type = "double"
+default = 1.0
+help = "Trace sampling ratio."
