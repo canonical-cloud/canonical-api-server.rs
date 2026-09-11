@@ -29,7 +29,7 @@ sha2 = "0.10.9"
 shared-auth-client = { git = "https://github.com/shared-auth/shared-auth-clients", rev = "cc57a85b276bee81ad94decc87df2f48d49cab9f", package = "shared-auth-client" }
 subtle = "2.6.1"
 thiserror = "2.0.18"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower-http = { version = "0.7.0", features = ["request-id", "sensitive-headers", "timeout", "trace"] }
 tracing = "0.1.44"

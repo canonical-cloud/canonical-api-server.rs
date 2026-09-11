@@ -79,6 +79,9 @@ GRANT SELECT, INSERT
 GRANT SELECT, INSERT, UPDATE
     ON TABLE canonical_cloud__quote.canonical_model_attempt
     TO canonical_cloud__quote__api_rw;
+GRANT SELECT, INSERT
+    ON TABLE canonical_cloud__quote.canonical_readiness_observation
+    TO canonical_cloud__quote__api_rw;
 
 GRANT USAGE, SELECT
     ON SEQUENCE canonical_cloud__quote.canonical_quote_event_sequence_id_seq
@@ -254,6 +257,31 @@ BEGIN
             'canonical_model_attempt API privilege contract is not exact';
     END IF;
 
+    IF NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'SELECT'
+    ) OR NOT has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'INSERT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'UPDATE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'DELETE'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__api_rw',
+        'canonical_cloud__quote.canonical_readiness_observation',
+        'TRUNCATE'
+    ) THEN
+        RAISE EXCEPTION
+            'canonical_readiness_observation API privilege contract is not append-only';
+    END IF;
+
     IF NOT has_sequence_privilege(
         'canonical_cloud__quote__api_rw',
         'canonical_cloud__quote.canonical_quote_event_sequence_id_seq',
@@ -278,6 +306,10 @@ BEGIN
     ) OR has_table_privilege(
         'canonical_cloud__quote__web_ro',
         'canonical_cloud__quote.canonical_quote_operation',
+        'SELECT'
+    ) OR has_table_privilege(
+        'canonical_cloud__quote__web_ro',
+        'canonical_cloud__quote.canonical_readiness_observation',
         'SELECT'
     ) THEN
         RAISE EXCEPTION
