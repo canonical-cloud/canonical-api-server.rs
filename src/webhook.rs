@@ -11,7 +11,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::time::sleep;
 
-use crate::QuoteEventRecord;
+use crate::{AssessmentEventRecord, QuoteEventRecord};
 
 const DELIVERY_ATTEMPTS: usize = 3;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -63,7 +63,17 @@ impl WebhookDispatcher {
     }
 
     pub(crate) async fn deliver(&self, event: QuoteEventRecord) -> Result<(), DeliveryError> {
-        let event = WebhookEvent::from(event);
+        self.dispatch(WebhookEvent::from(event)).await
+    }
+
+    pub(crate) async fn deliver_assessment(
+        &self,
+        event: AssessmentEventRecord,
+    ) -> Result<(), DeliveryError> {
+        self.dispatch(WebhookEvent::from(event)).await
+    }
+
+    async fn dispatch(&self, event: WebhookEvent) -> Result<(), DeliveryError> {
         let body = serde_json::to_vec(&event).map_err(|_| DeliveryError::Serialize)?;
         let timestamp = OffsetDateTime::now_utc().unix_timestamp().to_string();
         let signature = signature(&self.secret, &timestamp, &body);
@@ -165,18 +175,50 @@ impl From<QuoteEventRecord> for WebhookEvent {
             source: "api.canonical.plus",
             spec_version: "1.0",
             event_type: "canonical.quote.status.changed",
-            data: WebhookEventData {
+            data: WebhookEventData::Quote(QuoteWebhookData {
                 quote_id: event.quote_id.to_string(),
                 sequence: event.sequence,
                 status,
-            },
+            }),
+        }
+    }
+}
+
+impl From<AssessmentEventRecord> for WebhookEvent {
+    fn from(event: AssessmentEventRecord) -> Self {
+        Self {
+            id: format!("readiness-assessment:{}", event.assessment_id),
+            occurred_at: event.occurred_at,
+            source: "api.canonical.plus",
+            spec_version: "1.0",
+            event_type: "readiness.assessment.received",
+            data: WebhookEventData::Assessment(AssessmentWebhookData {
+                assessment_id: event.assessment_id.to_string(),
+                framework_ids: event.framework_ids,
+                status: event.status,
+            }),
         }
     }
 }
 
 #[derive(Serialize)]
+#[serde(untagged)]
+enum WebhookEventData {
+    Assessment(AssessmentWebhookData),
+    Quote(QuoteWebhookData),
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WebhookEventData {
+struct AssessmentWebhookData {
+    assessment_id: String,
+    framework_ids: Vec<String>,
+    status: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuoteWebhookData {
     quote_id: String,
     sequence: u64,
     status: String,
@@ -209,7 +251,7 @@ pub(crate) enum DeliveryError {
 #[cfg(test)]
 mod tests {
     use super::{signature, WebhookBuildError, WebhookDispatcher, WebhookEvent};
-    use crate::QuoteEventRecord;
+    use crate::{AssessmentEventRecord, QuoteEventRecord};
     use uuid::Uuid;
 
     const SECRET: &str = "0123456789abcdef0123456789abcdef";
@@ -276,5 +318,21 @@ mod tests {
         assert_eq!(json["id"], format!("quote:{quote_id}:42"));
         assert_eq!(json["data"]["status"], "ready");
         assert!(json.to_string().find("must-not-be-serialized").is_none());
+    }
+
+    #[test]
+    fn assessment_webhooks_use_stable_ids_and_the_received_status() {
+        let assessment_id = Uuid::parse_str("22222222-3333-4444-8555-666666666666").unwrap();
+        let event = WebhookEvent::from(AssessmentEventRecord {
+            assessment_id,
+            framework_ids: vec!["soc2-tsc".into()],
+            occurred_at: "2026-08-22T20:00:00Z".into(),
+            status: "received".into(),
+        });
+        let json = serde_json::to_value(event).unwrap();
+        assert_eq!(json["id"], format!("readiness-assessment:{assessment_id}"));
+        assert_eq!(json["type"], "readiness.assessment.received");
+        assert_eq!(json["data"]["frameworkIds"][0], "soc2-tsc");
+        assert_eq!(json["data"]["status"], "received");
     }
 }
