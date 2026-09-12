@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+sh ./.zpkg/pre-build
+cargo fmt --all -- --check
+cargo test --all-targets --all-features --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git diff --exit-code -- .zpkg.toml .zpkg Cargo.toml Cargo.lock interfaces-source.lock.json scripts src/main.rs src/contract.rs
+fi

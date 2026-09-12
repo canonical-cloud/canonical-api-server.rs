@@ -10,6 +10,7 @@ use std::{io, time::Duration};
 use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
+use canonical_lib::interfaces::QuoteRequest;
 use sea_orm::Database;
 use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
@@ -45,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         readiness_observation_ingest::ObservationService::from_env(database.clone())?;
     let database_configured = database.is_some();
     let gemini_configured = config.gemini_api_key.is_some();
+    let quote_request_contract = std::any::type_name::<QuoteRequest>();
 
     let listener = TcpListener::bind(&config.bind_address).await?;
     let mut state = AppState::new(
@@ -76,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         database_configured,
         gemini_configured,
         gemini_model = %config.gemini_model,
+        quote_request_contract,
         "canonical API listening"
     );
     let outcome = shutdown::serve(
