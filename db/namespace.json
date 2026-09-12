@@ -27,7 +27,8 @@
     ],
     "appendOnlyTables": [
       "canonical_quote_operation",
-      "canonical_quote_event"
+      "canonical_quote_event",
+      "canonical_readiness_observation"
     ],
     "webRuntime": [],
     "ddlOwner": "canonical_cloud__quote__migrator"
@@ -36,7 +37,7 @@
     "tool": "declarative-migrations/declarative-postgres-migrate.rs",
     "revision": "d05a7880987ddaa271fa88b52c787390ef12b899",
     "source": "db/schema.sql",
-    "sourceSha256": "124e7b3386fbe7a9cb4a0a8a7ba3c5955abef6e515acde6b365f76a625cd6e8a",
+    "sourceSha256": "9d1e94eba1d44c571addfbcc1fac2340080c78abb2e3a21ff3676798425dff07",
     "bootstrap": "db/bootstrap.sql",
     "grants": "db/grants.sql"
   },

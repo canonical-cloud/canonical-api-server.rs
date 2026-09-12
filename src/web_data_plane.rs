@@ -269,18 +269,23 @@ pub struct AsyncReceipt {
 }
 
 impl AsyncReceipt {
-    pub fn transition(&mut self, next: AsyncStatus) -> Result<(), DataPlaneError> {
+    /// Returns the next immutable receipt only when the durable async state
+    /// machine permits the transition. Persistence and message publication are
+    /// deliberately outside this pure transformation.
+    pub fn transition(self, next: AsyncStatus) -> Result<Self, DataPlaneError> {
         if !self.status.can_transition_to(next) {
             return Err(DataPlaneError::InvalidStatusTransition {
                 from: self.status,
                 to: next,
             });
         }
-        self.status = next;
-        if next == AsyncStatus::Processing {
-            self.attempt = self.attempt.saturating_add(1);
-        }
-        Ok(())
+        Ok(Self {
+            status: next,
+            attempt: self
+                .attempt
+                .saturating_add(u16::from(next == AsyncStatus::Processing)),
+            ..self
+        })
     }
 }
 
@@ -541,17 +546,20 @@ mod tests {
             Err(DataPlaneError::MissingDedupeKey)
         );
 
-        let mut receipt = AsyncReceipt {
+        let receipt = AsyncReceipt {
             operation_id: "op-01".to_string(),
             dedupe_key: "tenant-01:req-01".to_string(),
             status: AsyncStatus::Pending,
             attempt: 0,
             metadata: BTreeMap::new(),
         };
-        receipt.transition(AsyncStatus::Published).unwrap();
-        receipt.transition(AsyncStatus::Processing).unwrap();
-        assert_eq!(receipt.attempt, 1);
-        receipt.transition(AsyncStatus::Succeeded).unwrap();
+        let published = receipt.clone().transition(AsyncStatus::Published).unwrap();
+        let processing = published.transition(AsyncStatus::Processing).unwrap();
+        assert_eq!(receipt.status, AsyncStatus::Pending);
+        assert_eq!(receipt.attempt, 0);
+        assert_eq!(processing.attempt, 1);
+        let succeeded = processing.transition(AsyncStatus::Succeeded).unwrap();
         assert!(receipt.transition(AsyncStatus::Processing).is_err());
+        assert_eq!(succeeded.status, AsyncStatus::Succeeded);
     }
 }

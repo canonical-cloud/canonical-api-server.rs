@@ -32,6 +32,7 @@ if len(orm_packages) != 1:
     fail("exactly one locked canonical-orm-core package is required")
 orm_root = Path(orm_packages[0]["manifest_path"]).parent
 persistence = (orm_root / "src/quotes.rs").read_text()
+observation_ingest = (ROOT / "src/readiness_observation_ingest.rs").read_text()
 readiness = (ROOT / "src/readiness.rs").read_text() + (orm_root / "sql/quote-readiness.sql").read_text()
 main = (ROOT / "src/main.rs").read_text()
 
@@ -52,6 +53,12 @@ if manifest.get("readiness") != {
     "failClosed": True,
 }:
     fail("readiness manifest drift")
+if manifest["access"]["appendOnlyTables"] != [
+    "canonical_quote_operation",
+    "canonical_quote_event",
+    "canonical_readiness_observation",
+]:
+    fail("append-only table manifest drift")
 
 schema_digest = hashlib.sha256(schema.encode()).hexdigest()
 if schema_digest != manifest["declarativeMigration"]["sourceSha256"]:
@@ -77,6 +84,7 @@ table_names = (
     "canonical_quote_operation",
     "canonical_quote_event",
     "canonical_model_attempt",
+    "canonical_readiness_observation",
 )
 for table in table_names:
     qualified = f"{NAMESPACE}.{table}"
@@ -84,7 +92,8 @@ for table in table_names:
         fail(f"missing qualified table: {qualified}")
     if f"ALTER TABLE {qualified}\n    FORCE ROW LEVEL SECURITY" not in schema:
         fail(f"forced RLS missing for {qualified}")
-    if table not in persistence:
+    runtime_source = observation_ingest if table == "canonical_readiness_observation" else persistence
+    if table not in runtime_source:
         fail(f"runtime persistence omits {table}")
 
 required_constraints = (
@@ -105,6 +114,21 @@ required_constraints = (
     "canonical_model_attempt_status_finished_check",
     "canonical_model_attempt_time_order_check",
     "canonical_model_attempt_quote_owner_fk",
+    "canonical_readiness_observation_owner_source_event_pk",
+    "canonical_readiness_observation_owner_source_sequence_unique",
+    "canonical_readiness_observation_receipt_id_unique",
+    "canonical_readiness_observation_source_id_check",
+    "canonical_readiness_observation_event_id_check",
+    "canonical_readiness_observation_source_sequence_check",
+    "canonical_readiness_observation_payload_sha256_check",
+    "canonical_readiness_observation_prior_record_sha256_check",
+    "canonical_readiness_observation_record_sha256_check",
+    "canonical_readiness_observation_receipt_id_check",
+    "canonical_readiness_observation_key_id_check",
+    "canonical_readiness_observation_event_json_object_check",
+    "canonical_readiness_observation_raw_body_octets_check",
+    "canonical_readiness_observation_transport_verification_check",
+    "canonical_readiness_observation_substantive_review_check",
 )
 for constraint in required_constraints:
     if schema.count(f"CONSTRAINT {constraint}") != 1:
@@ -123,11 +147,12 @@ for json_column in (
     "context_snapshot_json",
     "analysis_json",
     "details_json",
+    "event_json",
 ):
     if f"jsonb_typeof({json_column})" not in schema:
         fail(f"JSON object shape check missing: {json_column}")
 
-if "public.canonical_" in persistence:
+if "public.canonical_" in persistence or "public.canonical_" in observation_ingest:
     fail("runtime SQL must not bind Canonical objects to public")
 if "canonical_cloud__quote" not in bootstrap:
     fail("role-level Canonical search_path pin is missing")
@@ -152,6 +177,7 @@ for required in (
     "GRANT SELECT, INSERT, UPDATE",
     "canonical_quote_operation API privilege contract is append-only",
     "canonical_quote_event API privilege contract is not append-only",
+    "canonical_readiness_observation API privilege contract is not append-only",
     "has_sequence_privilege",
     "has_function_privilege",
     "refusing grants because",
@@ -169,6 +195,8 @@ for required in (
     "canonical_quote_event_quote_owner_fk",
     "canonical_model_attempt_quote_owner_fk",
     "canonical_model_attempt_status_finished_check",
+    "canonical_readiness_observation_owner_policy",
+    "canonical_readiness_observation_owner_received_idx",
     "has_table_privilege",
     "rolbypassrls",
 ):
@@ -176,6 +204,21 @@ for required in (
         fail(f"readiness contract omits {required}")
 if "merge(readiness::router(readiness_database))" not in main:
     fail("binary does not serve the fail-closed readiness router")
+if "merge(readiness_observation_ingest::router(observation_service))" not in main:
+    fail("binary does not serve the readiness observation ingress")
+
+for required in (
+    '"/api/v1/readiness/sources/{source_id}/observations"',
+    '"/v1/readiness/sources/{source_id}/observations"',
+    "x-canonical-webhook-signature",
+    "canonical.readiness.observation.v1",
+    "canonical.readiness.observation.receipt.v1",
+    "substantive_review: \"unreviewed\"",
+    "pg_advisory_xact_lock",
+    "source sequence must be the next contiguous value",
+):
+    if required not in observation_ingest:
+        fail(f"observation ingress omits {required}")
 
 workflow = (ROOT / ".github/workflows/declarative-postgres.yml").read_text()
 for required in (
@@ -183,6 +226,7 @@ for required in (
     DPM_REVISION,
     "scripts/test-declarative-postgres.sh",
     "scripts/verify-declarative-db-contract.py",
+    "src/readiness_observation_ingest.rs",
     "persist-credentials: false",
 ):
     if required not in workflow:
@@ -197,6 +241,7 @@ print(
             "tables": list(table_names),
             "required_constraints": list(required_constraints),
             "runtime_readiness": "/readyz",
+            "observation_ingress": "/v1/readiness/sources/{sourceId}/observations",
             "web_direct_database_access": False,
         },
         sort_keys=True,

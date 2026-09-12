@@ -13,23 +13,28 @@ name = "canonical-api-server"
 path = "src/main.rs"
 
 [dependencies]
+k8s-web-api-data-plane = { git = "https://github.com/ORESoftware/k8s-libs-and-shared-defs.git", rev = "55adadc9f6d223d40b28ae66097dfe16930951b1", package = "k8s-web-api-data-plane" }
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
 canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "c636c08c7ed16255711752c55ed1ae3d7c2db434" }
-canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "a3e4e022977aa9f35bc4aac0815729b41d63e8ba", features = ["read-write"] }
+canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "fdfb44461dce5b01f6ad2639c7176e45cb2f1723", features = ["read-write"] }
 canonical-interfaces = { git = "https://github.com/canonical-cloud/canonical-interfaces", rev = "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef" }
 futures-util = "0.3.32"
+flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-env", rev = "d7bad9ea7dfc657653368237e08903514cdca1ec" }
 hmac = "0.12.1"
 next-loggers = { git = "https://github.com/ores-otel/ores.otel.log", rev = "ca176fb6768a9750d262a536952268625ffd3a8a", package = "oresoftware-next-loggers" }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
 sha2 = "0.10.9"
 shared-auth-client = { git = "https://github.com/shared-auth/shared-auth-clients", rev = "cc57a85b276bee81ad94decc87df2f48d49cab9f", package = "shared-auth-client" }
 subtle = "2.6.1"
 thiserror = "2.0.18"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tempfile = "3"
+toml = "0.8"
 tower-http = { version = "0.7.0", features = ["request-id", "sensitive-headers", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }

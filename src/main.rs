@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod readiness;
+mod readiness_observation_ingest;
 mod shutdown;
 mod telemetry;
 
@@ -9,14 +10,16 @@ use std::{io, time::Duration};
 use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
+use canonical_lib::interfaces::QuoteRequest;
 use canonical_orm_core::QuoteStore;
+use sea_orm::Database;
 use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
 
 fn shutdown_grace() -> Duration {
     const DEFAULT_MS: u64 = 30_000;
-    let milliseconds = std::env::var("SHUTDOWN_GRACE_MS")
+    let milliseconds = canonical_api_server::flags::var("SHUTDOWN_GRACE_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -26,6 +29,12 @@ fn shutdown_grace() -> Duration {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(output) =
+        canonical_api_server::flags::process_control().map_err(io::Error::other)?
+    {
+        print!("{output}");
+        return Ok(());
+    }
     let _telemetry = telemetry::init();
 
     let config = Config::from_env()?;
@@ -33,9 +42,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(url) => Some(QuoteStore::connect(url).await?),
         None => None,
     };
-    let readiness_database = database.clone();
+    // Quote persistence is owned by canonical-orm-core. The readiness observation
+    // ledger is still API-local SQL, so it keeps its own SeaORM pool on the same
+    // runtime URL and role until that ledger moves behind the ORM boundary.
+    let observation_database = match config.database_url.as_deref() {
+        Some(url) => Some(Database::connect(url).await?),
+        None => None,
+    };
+    let readiness_database = database.clone().zip(observation_database.clone());
+    let observation_service =
+        readiness_observation_ingest::ObservationService::from_env(observation_database)?;
     let database_configured = database.is_some();
     let gemini_configured = config.gemini_api_key.is_some();
+    let quote_request_contract = std::any::type_name::<QuoteRequest>();
 
     let listener = TcpListener::bind(&config.bind_address).await?;
     let mut state = AppState::new(
@@ -59,12 +78,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = build_router(state).merge(readiness::router(readiness_database));
+    let app = build_router(state)
+        .merge(readiness::router(readiness_database))
+        .merge(readiness_observation_ingest::router(observation_service));
     info!(
         address = %config.bind_address,
         database_configured,
         gemini_configured,
         gemini_model = %config.gemini_model,
+        quote_request_contract,
         "canonical API listening"
     );
     let outcome = shutdown::serve(

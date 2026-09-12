@@ -7,7 +7,16 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY context ./context
 COPY db ./db
-RUN cargo build --locked --release --bin canonical-api-server
+# The private canonical-lib-core dependency is fetched with the scoped
+# BuildKit secret only. GIT_CONFIG_COUNT keeps the credential out of image
+# layers, git config, build arguments, and command output.
+RUN --mount=type=secret,id=canonical_lib_read_token \
+    token="$(cat /run/secrets/canonical_lib_read_token)" && \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0="url.https://x-access-token:${token}@github.com/.insteadOf" \
+    GIT_CONFIG_VALUE_0="https://github.com/" \
+    cargo build --locked --release --bin canonical-api-server
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 WORKDIR /app
@@ -21,4 +30,8 @@ USER 65532:65532
 #     just env-docker-run prod <image>        # decrypts env/enc/prod.env.enc
 #                                             # and passes --env-file, no plaintext on disk
 # or render a platform secret from the same ciphertext. See env/README.md.
+# ores-otel: in-process OTLP to the cluster collector. The *-sidecar.rs image is a separate loopback helper on 127.0.0.1:9090 — do not EXPOSE 4317/4318 or 9090.
+ENV OTEL_SERVICE_NAME=canonical-api-server \
+    OTEL_EXPORTER_OTLP_ENDPOINT=http://dd-otel-collector.observability.svc.cluster.local:4318 \
+    RUST_LOG=info
 ENTRYPOINT ["/app/canonical-api-server", "serve"]
