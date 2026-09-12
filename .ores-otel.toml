@@ -1,0 +1,73 @@
+# Contract authority: ores-otel/ores-interfaces/contracts/ores-otel-config
+version = 1
+mode = "server"
+strict = true
+
+[flags2env]
+contract = ".cli-flags.toml"
+require_audit = true
+precedence = "argv-over-env"
+
+[[env]]
+name = "service_name"
+key = "ORES_OTEL_SERVICE_NAME"
+kind = "string"
+required = false
+secret = false
+default = "canonical-api-server"
+
+[[env]]
+name = "log_filter"
+key = "RUST_LOG"
+kind = "string"
+required = false
+secret = false
+default = "info"
+
+[[env]]
+name = "sample_ratio"
+key = "ORES_OTEL_SAMPLE_RATIO"
+kind = "double"
+required = false
+secret = false
+default = "1.0"
+
+[[env]]
+name = "otlp_endpoint"
+key = "OTEL_EXPORTER_OTLP_ENDPOINT"
+kind = "url"
+required = false
+secret = false
+
+[[env]]
+name = "otlp_headers"
+key = "OTEL_EXPORTER_OTLP_HEADERS"
+kind = "string"
+required = false
+secret = true
+
+[[env]]
+name = "batch_max_queue"
+key = "ORES_OTEL_BATCH_MAX_QUEUE"
+kind = "integer"
+required = false
+secret = false
+default = "2048"
+
+[[env]]
+name = "redact_fields"
+key = "ORES_OTEL_REDACT_FIELDS"
+kind = "json"
+required = false
+secret = false
+default = "[\"authorization\",\"cookie\",\"set-cookie\"]"
+
+[server]
+enabled = true
+service_name_binding = "service_name"
+log_filter_binding = "log_filter"
+sample_ratio_binding = "sample_ratio"
+otlp_endpoint_binding = "otlp_endpoint"
+otlp_headers_binding = "otlp_headers"
+batch_max_queue_binding = "batch_max_queue"
+redact_fields_binding = "redact_fields"

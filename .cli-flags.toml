@@ -11,6 +11,7 @@ allow_unknown = false
 
 [env]
 ignore = ["CANONICAL_INTERNAL_AUTH_TOKEN", "CANONICAL_WEBHOOK_SECRET", "DATABASE_URL", "GEMINI_API_KEY", "SHARED_AUTH_INTROSPECT_SECRET"]
+load = false
 
 [flags.help]
 env = "CLI_HELP_REQUESTED"
@@ -74,3 +75,22 @@ long = "rust-log"
 type = "string"
 default = "info"
 help = "Tracing filter directive."
+[flags.config]
+env = "CANONICAL_CONFIG"
+long = "config"
+type = "string"
+help = "Path to runtime configuration."
+
+[flags.otel-service-name]
+env = "ORES_OTEL_SERVICE_NAME"
+long = "otel-service-name"
+type = "string"
+default = "canonical-api-server"
+help = "Non-secret OpenTelemetry service name."
+
+[flags.otel-sample-ratio]
+env = "ORES_OTEL_SAMPLE_RATIO"
+long = "otel-sample-ratio"
+type = "double"
+default = 1.0
+help = "Trace sampling ratio."
