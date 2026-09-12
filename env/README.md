@@ -92,8 +92,8 @@ encrypted, so anything explanatory belongs in this file instead.
 
 Two format limits, inherited from sops' dotenv parser:
 
-- **No multi-line values.** A PEM must be a single line with `\n` escapes:
-  `JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIE…\n-----END PRIVATE KEY-----\n"`
+- **No multi-line values.** A PEM must be represented on one dotenv line with escaped `\n` separators. Use a non-secret placeholder such as:
+  `JWT_PRIVATE_KEY="<PEM-private-key-with-escaped-newlines>"`
 - **Blank lines are dropped** on round-trip. Cosmetic only.
 
 ## Containers
