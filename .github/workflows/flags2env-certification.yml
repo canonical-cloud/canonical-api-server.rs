@@ -1,0 +1,36 @@
+name: flags2env-certification
+
+on:
+  pull_request:
+    paths:
+      - ".cli-flags.toml"
+      - "src/flags.rs"
+      - "tests/flags2env_certification.rs"
+      - ".github/workflows/flags2env-certification.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".cli-flags.toml"
+      - "src/flags.rs"
+      - "tests/flags2env_certification.rs"
+      - ".github/workflows/flags2env-certification.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Execute dependency-independent certification guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          rustc --edition=2021 --test tests/flags2env_certification.rs -o "$RUNNER_TEMP/flags2env-certification"
+          "$RUNNER_TEMP/flags2env-certification" --nocapture
