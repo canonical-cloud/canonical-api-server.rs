@@ -32,89 +32,107 @@ search_path_contract AS (
     ]::name[] AS ok
 ),
 object_ownership AS (
-    SELECT count(*) = 7 AS ok
-    FROM pg_class AS relation
-    JOIN pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname = 'canonical_cloud__quote'
-      AND relation.relkind IN ('r', 'p', 'S')
-      AND pg_get_userbyid(relation.relowner)
-          = 'canonical_cloud__quote__migrator'
+    SELECT NOT EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'canonical_cloud__quote'
+          AND relation.relkind IN ('r', 'p', 'S')
+          AND pg_get_userbyid(relation.relowner)
+              <> 'canonical_cloud__quote__migrator'
+    ) AS ok
 ),
 rls_tables AS (
-    SELECT count(*) = 6 AS ok
-    FROM pg_class AS relation
-    JOIN pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname = 'canonical_cloud__quote'
-      AND relation.relname IN (
-          'canonical_context',
-          'canonical_quote',
-          'canonical_quote_operation',
-          'canonical_quote_event',
-          'canonical_model_attempt',
-          'canonical_readiness_observation'
-      )
-      AND relation.relkind IN ('r', 'p')
-      AND relation.relrowsecurity
-      AND relation.relforcerowsecurity
+    SELECT NOT EXISTS (
+        SELECT 1
+        FROM (VALUES
+            ('canonical_context'),
+            ('canonical_quote'),
+            ('canonical_quote_operation'),
+            ('canonical_quote_event'),
+            ('canonical_model_attempt'),
+            ('canonical_readiness_observation')
+        ) AS required(relname)
+        LEFT JOIN pg_namespace AS namespace
+          ON namespace.nspname = 'canonical_cloud__quote'
+        LEFT JOIN pg_class AS relation
+          ON relation.relnamespace = namespace.oid
+         AND relation.relname = required.relname
+         AND relation.relkind IN ('r', 'p')
+        WHERE relation.oid IS NULL
+           OR NOT relation.relrowsecurity
+           OR NOT relation.relforcerowsecurity
+    ) AS ok
 ),
 owner_policies AS (
-    SELECT count(*) = 6 AS ok
-    FROM pg_policies
-    WHERE schemaname = 'canonical_cloud__quote'
-      AND policyname IN (
-          'canonical_context_owner_policy',
-          'canonical_quote_owner_policy',
-          'canonical_quote_operation_owner_policy',
-          'canonical_quote_event_owner_policy',
-          'canonical_model_attempt_owner_policy',
-          'canonical_readiness_observation_owner_policy'
-      )
+    SELECT NOT EXISTS (
+        SELECT 1
+        FROM (VALUES
+            ('canonical_context_owner_policy'),
+            ('canonical_quote_owner_policy'),
+            ('canonical_quote_operation_owner_policy'),
+            ('canonical_quote_event_owner_policy'),
+            ('canonical_model_attempt_owner_policy'),
+            ('canonical_readiness_observation_owner_policy')
+        ) AS required(policyname)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_policies AS policy
+            WHERE policy.schemaname = 'canonical_cloud__quote'
+              AND policy.policyname = required.policyname
+        )
+    ) AS ok
 ),
 required_constraints AS (
-    SELECT count(*) = 32 AS ok
-    FROM pg_constraint
-    WHERE connamespace = (
-        SELECT oid
-        FROM pg_namespace
-        WHERE nspname = 'canonical_cloud__quote'
-    )
-      AND conname IN (
-          'canonical_context_json_object_check',
-          'canonical_context_id_owner_unique',
-          'canonical_quote_request_json_object_check',
-          'canonical_quote_context_snapshot_json_object_check',
-          'canonical_quote_analysis_json_object_check',
-          'canonical_quote_id_owner_unique',
-          'canonical_quote_context_owner_fk',
-          'canonical_quote_operation_owner_key_pk',
-          'canonical_quote_operation_key_check',
-          'canonical_quote_operation_request_check',
-          'canonical_quote_operation_request_json_object_check',
-          'canonical_quote_operation_quote_owner_fk',
-          'canonical_quote_event_details_json_object_check',
-          'canonical_quote_event_quote_owner_fk',
-          'canonical_model_attempt_status_finished_check',
-          'canonical_model_attempt_time_order_check',
-          'canonical_model_attempt_quote_owner_fk',
-          'canonical_readiness_observation_owner_source_event_pk',
-          'canonical_readiness_observation_owner_source_sequence_unique',
-          'canonical_readiness_observation_receipt_id_unique',
-          'canonical_readiness_observation_source_id_check',
-          'canonical_readiness_observation_event_id_check',
-          'canonical_readiness_observation_source_sequence_check',
-          'canonical_readiness_observation_payload_sha256_check',
-          'canonical_readiness_observation_prior_record_sha256_check',
-          'canonical_readiness_observation_record_sha256_check',
-          'canonical_readiness_observation_receipt_id_check',
-          'canonical_readiness_observation_key_id_check',
-          'canonical_readiness_observation_event_json_object_check',
-          'canonical_readiness_observation_raw_body_octets_check',
-          'canonical_readiness_observation_transport_verification_check',
-          'canonical_readiness_observation_substantive_review_check'
-      )
-      AND convalidated
+    SELECT NOT EXISTS (
+        SELECT 1
+        FROM (VALUES
+            ('canonical_context_json_object_check'),
+            ('canonical_context_id_owner_unique'),
+            ('canonical_quote_request_json_object_check'),
+            ('canonical_quote_context_snapshot_json_object_check'),
+            ('canonical_quote_analysis_json_object_check'),
+            ('canonical_quote_id_owner_unique'),
+            ('canonical_quote_context_owner_fk'),
+            ('canonical_quote_operation_owner_key_pk'),
+            ('canonical_quote_operation_key_check'),
+            ('canonical_quote_operation_request_check'),
+            ('canonical_quote_operation_request_json_object_check'),
+            ('canonical_quote_operation_quote_owner_fk'),
+            ('canonical_quote_event_details_json_object_check'),
+            ('canonical_quote_event_quote_owner_fk'),
+            ('canonical_model_attempt_status_finished_check'),
+            ('canonical_model_attempt_time_order_check'),
+            ('canonical_model_attempt_quote_owner_fk'),
+            ('canonical_readiness_observation_owner_source_event_pk'),
+            ('canonical_readiness_observation_owner_source_sequence_unique'),
+            ('canonical_readiness_observation_receipt_id_unique'),
+            ('canonical_readiness_observation_source_id_check'),
+            ('canonical_readiness_observation_event_id_check'),
+            ('canonical_readiness_observation_source_sequence_check'),
+            ('canonical_readiness_observation_payload_sha256_check'),
+            ('canonical_readiness_observation_prior_record_sha256_check'),
+            ('canonical_readiness_observation_record_sha256_check'),
+            ('canonical_readiness_observation_receipt_id_check'),
+            ('canonical_readiness_observation_key_id_check'),
+            ('canonical_readiness_observation_event_json_object_check'),
+            ('canonical_readiness_observation_raw_body_octets_check'),
+            ('canonical_readiness_observation_transport_verification_check'),
+            ('canonical_readiness_observation_substantive_review_check')
+        ) AS required(conname)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint AS constraint_row
+            WHERE constraint_row.connamespace = (
+                SELECT oid
+                FROM pg_namespace
+                WHERE nspname = 'canonical_cloud__quote'
+            )
+              AND constraint_row.conname = required.conname
+              AND constraint_row.convalidated
+        )
+    ) AS ok
 ),
 required_indexes AS (
     SELECT
@@ -441,5 +459,16 @@ mod tests {
         ] {
             assert!(READINESS_SQL.contains(required), "{required}");
         }
+    }
+
+    #[test]
+    fn readiness_uses_named_invariants_not_global_object_counts() {
+        assert!(!READINESS_SQL.contains("count(*) = 7"));
+        assert!(!READINESS_SQL.contains("count(*) = 6"));
+        assert!(!READINESS_SQL.contains("count(*) = 32"));
+        assert!(READINESS_SQL.contains("NOT EXISTS"));
+        assert!(READINESS_SQL.contains("FROM (VALUES"));
+        assert!(READINESS_SQL.contains("relation.oid IS NULL"));
+        assert!(READINESS_SQL.contains("constraint_row.convalidated"));
     }
 }
