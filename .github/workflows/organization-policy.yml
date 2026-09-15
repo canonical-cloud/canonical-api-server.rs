@@ -1,0 +1,14 @@
+name: organization policy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    uses: canonical-cloud/.github/.github/workflows/reusable-policy.yml@0ea46201f6a0055aa5d28c465488394d3c2c56c0
