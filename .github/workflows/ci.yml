@@ -16,14 +16,6 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # Cargo's native git backend cannot read the private canonical-lib-core
-    # dependency. The repository must supply a separately scoped read-only
-    # credential; it is masked, process-scoped, and never written into source.
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.CANONICAL_LIB_READ_TOKEN }}@github.com/.insteadOf
-      GIT_CONFIG_VALUE_0: https://github.com/
     steps:
       - name: Check out the exact source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -37,23 +29,30 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
-      - name: Require private Canonical library read credential
+      - name: Fetch locked private dependencies with least privilege
         env:
           CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.CANONICAL_LIB_READ_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
+        shell: bash
         run: |
+          set -euo pipefail
           if [ -z "$CANONICAL_LIB_READ_TOKEN" ]; then
             echo "CANONICAL_LIB_READ_TOKEN must grant read-only access to canonical-lib-core" >&2
             exit 1
           fi
+          cargo fetch --locked
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Lint
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Lint from the fetched dependency graph
+        run: cargo clippy --locked --offline --all-targets --all-features -- -D warnings
 
-      - name: Run tests
-        run: cargo test --locked --all-targets --all-features
+      - name: Run tests from the fetched dependency graph
+        run: cargo test --locked --offline --all-targets --all-features
 
       - name: Validate repository, dependency, database, and Gemini contracts
         shell: bash
