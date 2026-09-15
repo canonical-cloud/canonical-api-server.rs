@@ -10,22 +10,31 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  packages: write
-  id-token: write
 concurrency:
   group: images-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   dkf-drift:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
         with: { node-version: 22 }
-      - run: curl -fsSL https://raw.githubusercontent.com/ORESoftware/ores-gha-workflows/main/scripts/render-dkf.mjs -o /tmp/render-dkf.mjs && node /tmp/render-dkf.mjs . --check
+      - name: Verify generated Dockerfile contracts
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/ORESoftware/ores-gha-workflows/f0725007da6d592ca912b8d3f841fb16d0a7513e/scripts/render-dkf.mjs -o /tmp/render-dkf.mjs
+          node /tmp/render-dkf.mjs . --check
   images:
     needs: dkf-drift
-    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@main
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@f0725007da6d592ca912b8d3f841fb16d0a7513e
     with:
       image-name: canonical-cloud/canonical-api-fp.PqKW0h
       gcp-project: canonical-cloud
