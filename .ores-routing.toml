@@ -1,0 +1,36 @@
+version = 1
+surface = "api"
+
+[implementation]
+engine = "ores_fs_v1"
+ownership = "in_house"
+
+[filesystem]
+mode = "optional_parity_checked"
+root = "src/routes"
+leaf = "route.rs"
+static_before_dynamic = true
+fail_on_conflict = true
+dynamic_segment = "[param]"
+catch_all_segment = "[...param]"
+optional_catch_all_segment = "[[...param]]"
+
+[module_contract]
+compile_time = true
+generated_compile_glue = true
+http_verb_functions = ["get", "post", "put", "patch", "delete", "head", "options"]
+one_file_one_path = true
+one_file_one_operation = false
+
+[codegen]
+stage = "build"
+network_fetch = false
+generate_framework_router = true
+static_source_analysis = true
+
+[rpc]
+api_docs = "ORESoftware/api-docs"
+role = "server_required"
+route_map_authoritative = true
+one_operation_per_path_verb = true
+projection = "in_process_http"
