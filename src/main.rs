@@ -7,14 +7,33 @@ mod telemetry;
 
 use std::{io, time::Duration};
 
+use axum::{extract::Request, response::Response, Router};
 use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
 use canonical_lib::interfaces::QuoteRequest;
+use ores_api_docs::RouteMap;
 use sea_orm::Database;
 use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
+use tower::ServiceExt;
 use tracing::info;
+
+include!(concat!(env!("OUT_DIR"), "/ores_filesystem_api.rs"));
+
+const FILESYSTEM_ROUTE_MAP: &str = include_str!("../contracts/filesystem-pilot.route-map.json");
+
+#[derive(Clone)]
+struct FilesystemRouteState {
+    legacy: Router,
+}
+
+async fn forward_filesystem_request(state: FilesystemRouteState, request: Request) -> Response {
+    match state.legacy.oneshot(request).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
+}
 
 fn shutdown_grace() -> Duration {
     const DEFAULT_MS: u64 = 30_000;
@@ -70,9 +89,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = build_router(state)
+    let legacy = build_router(state)
         .merge(readiness::router(readiness_database))
         .merge(readiness_observation_ingest::router(observation_service));
+    let filesystem_state = FilesystemRouteState {
+        legacy: legacy.clone(),
+    };
+    let route_map = RouteMap::from_json_str(FILESYSTEM_ROUTE_MAP)?;
+    let filesystem = __ores_filesystem_api_http_and_rpc_router!(filesystem_state, route_map)?;
+    let app = filesystem.fallback_service(legacy);
+
     info!(
         address = %config.bind_address,
         database_configured,
