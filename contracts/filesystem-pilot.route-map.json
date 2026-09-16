@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0.0",
+  "service": "canonical-api-server-filesystem-pilot",
+  "version": "0.1.0",
+  "map": {
+    "list_quotes": {
+      "path": "/api/v1/quotes",
+      "methods": ["GET"]
+    },
+    "create_quote": {
+      "path": "/api/v1/quotes",
+      "methods": ["POST"]
+    },
+    "list_readiness_assessments": {
+      "path": "/api/v1/readiness/assessments",
+      "methods": ["GET"]
+    },
+    "create_readiness_assessment": {
+      "path": "/api/v1/readiness/assessments",
+      "methods": ["POST"]
+    },
+    "get_readiness_assessment": {
+      "path": "/api/v1/readiness/assessments/{assessmentId}",
+      "methods": ["GET"],
+      "path_params": {
+        "type": "object",
+        "required": ["assessmentId"],
+        "properties": {
+          "assessmentId": { "type": "string", "format": "uuid" }
+        }
+      }
+    }
+  }
+}

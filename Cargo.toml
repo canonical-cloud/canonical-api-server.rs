@@ -21,6 +21,7 @@ futures-util = "0.3.32"
 flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-env", rev = "d7bad9ea7dfc657653368237e08903514cdca1ec" }
 hmac = "0.12.1"
 next-loggers = { git = "https://github.com/ores-otel/ores.otel.log", rev = "ca176fb6768a9750d262a536952268625ffd3a8a", package = "oresoftware-next-loggers" }
+ores-api-docs = { git = "https://github.com/ORESoftware/api-docs.git", rev = "168c05f025dd465198139888defbfabb810f7cee", package = "ores-api-docs", default-features = false, features = ["axum"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -33,14 +34,17 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tempfile = "3"
 toml = "0.8"
+tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.0", features = ["request-id", "sensitive-headers", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.23.0", features = ["serde", "v4"] }
 
+[build-dependencies]
+ores-api-docs = { git = "https://github.com/ORESoftware/api-docs.git", rev = "168c05f025dd465198139888defbfabb810f7cee", package = "ores-api-docs", default-features = false }
+
 [dev-dependencies]
 http-body-util = "0.1.3"
-tower = { version = "0.5.3", features = ["util"] }
 
 [lints.rust]
 unsafe_code = "forbid"
