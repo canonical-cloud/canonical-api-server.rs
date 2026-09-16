@@ -11,6 +11,7 @@ use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
 use canonical_lib::interfaces::QuoteRequest;
+use canonical_orm_core::QuoteStore;
 use sea_orm::Database;
 use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
@@ -38,12 +39,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env()?;
     let database = match config.database_url.as_deref() {
+        Some(url) => Some(QuoteStore::connect(url).await?),
+        None => None,
+    };
+    // Quote persistence is owned by canonical-orm-core. The readiness observation
+    // ledger is still API-local SQL, so it keeps its own SeaORM pool on the same
+    // runtime URL and role until that ledger moves behind the ORM boundary.
+    let observation_database = match config.database_url.as_deref() {
         Some(url) => Some(Database::connect(url).await?),
         None => None,
     };
-    let readiness_database = database.clone();
+    let readiness_database = database.clone().zip(observation_database.clone());
     let observation_service =
-        readiness_observation_ingest::ObservationService::from_env(database.clone())?;
+        readiness_observation_ingest::ObservationService::from_env(observation_database)?;
     let database_configured = database.is_some();
     let gemini_configured = config.gemini_api_key.is_some();
     let quote_request_contract = std::any::type_name::<QuoteRequest>();

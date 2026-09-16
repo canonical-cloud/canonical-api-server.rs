@@ -16,7 +16,9 @@ path = "src/main.rs"
 k8s-web-api-data-plane = { git = "https://github.com/ORESoftware/k8s-libs-and-shared-defs.git", rev = "55adadc9f6d223d40b28ae66097dfe16930951b1", package = "k8s-web-api-data-plane" }
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
-canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "c636c08c7ed16255711752c55ed1ae3d7c2db434" }
+canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "fdfb44461dce5b01f6ad2639c7176e45cb2f1723", features = ["read-write"] }
+canonical-interfaces = { git = "https://github.com/canonical-cloud/canonical-interfaces", rev = "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef" }
 futures-util = "0.3.32"
 flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-env", rev = "d7bad9ea7dfc657653368237e08903514cdca1ec" }
 hmac = "0.12.1"

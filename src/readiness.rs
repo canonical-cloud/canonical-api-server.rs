@@ -2,78 +2,37 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use canonical_orm_core::QuoteStore;
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, Statement};
 use serde::Serialize;
 use tracing::error;
 
-const READINESS_SQL: &str = r#"
-WITH runtime_role AS (
-    SELECT
-        rolname = 'canonical_cloud__quote__api_rw'
-        AND rolcanlogin
-        AND NOT rolsuper
-        AND NOT rolcreatedb
-        AND NOT rolcreaterole
-        AND NOT rolinherit
-        AND NOT rolreplication
-        AND NOT rolbypassrls
-        AND NOT pg_has_role(
-            current_user,
-            'canonical_cloud__quote__migrator',
-            'member'
-        ) AS ok
-    FROM pg_roles
-    WHERE rolname = current_user
-),
-search_path_contract AS (
-    SELECT current_schemas(FALSE) = ARRAY[
-        'pg_catalog',
-        'canonical_cloud__quote'
-    ]::name[] AS ok
-),
-object_ownership AS (
-    SELECT count(*) = 7 AS ok
+/// Readiness of the API-local append-only observation ledger. The quote tables,
+/// runtime role and search_path are verified by `QuoteStore::readiness` in
+/// canonical-orm-core; this query covers only what the API still owns directly.
+const OBSERVATION_READINESS_SQL: &str = r#"
+WITH observation_table AS (
+    SELECT count(*) = 1 AS ok
     FROM pg_class AS relation
     JOIN pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname = 'canonical_cloud__quote'
-      AND relation.relkind IN ('r', 'p', 'S')
-      AND pg_get_userbyid(relation.relowner)
-          = 'canonical_cloud__quote__migrator'
-),
-rls_tables AS (
-    SELECT count(*) = 6 AS ok
-    FROM pg_class AS relation
-    JOIN pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname = 'canonical_cloud__quote'
-      AND relation.relname IN (
-          'canonical_context',
-          'canonical_quote',
-          'canonical_quote_operation',
-          'canonical_quote_event',
-          'canonical_model_attempt',
-          'canonical_readiness_observation'
-      )
+      AND relation.relname = 'canonical_readiness_observation'
       AND relation.relkind IN ('r', 'p')
       AND relation.relrowsecurity
       AND relation.relforcerowsecurity
+      AND pg_get_userbyid(relation.relowner)
+          = 'canonical_cloud__quote__migrator'
 ),
 owner_policies AS (
-    SELECT count(*) = 6 AS ok
+    SELECT count(*) = 1 AS ok
     FROM pg_policies
     WHERE schemaname = 'canonical_cloud__quote'
-      AND policyname IN (
-          'canonical_context_owner_policy',
-          'canonical_quote_owner_policy',
-          'canonical_quote_operation_owner_policy',
-          'canonical_quote_event_owner_policy',
-          'canonical_model_attempt_owner_policy',
-          'canonical_readiness_observation_owner_policy'
-      )
+      AND tablename = 'canonical_readiness_observation'
+      AND policyname = 'canonical_readiness_observation_owner_policy'
 ),
 required_constraints AS (
-    SELECT count(*) = 32 AS ok
+    SELECT count(*) = 15 AS ok
     FROM pg_constraint
     WHERE connamespace = (
         SELECT oid
@@ -81,23 +40,6 @@ required_constraints AS (
         WHERE nspname = 'canonical_cloud__quote'
     )
       AND conname IN (
-          'canonical_context_json_object_check',
-          'canonical_context_id_owner_unique',
-          'canonical_quote_request_json_object_check',
-          'canonical_quote_context_snapshot_json_object_check',
-          'canonical_quote_analysis_json_object_check',
-          'canonical_quote_id_owner_unique',
-          'canonical_quote_context_owner_fk',
-          'canonical_quote_operation_owner_key_pk',
-          'canonical_quote_operation_key_check',
-          'canonical_quote_operation_request_check',
-          'canonical_quote_operation_request_json_object_check',
-          'canonical_quote_operation_quote_owner_fk',
-          'canonical_quote_event_details_json_object_check',
-          'canonical_quote_event_quote_owner_fk',
-          'canonical_model_attempt_status_finished_check',
-          'canonical_model_attempt_time_order_check',
-          'canonical_model_attempt_quote_owner_fk',
           'canonical_readiness_observation_owner_source_event_pk',
           'canonical_readiness_observation_owner_source_sequence_unique',
           'canonical_readiness_observation_receipt_id_unique',
@@ -117,172 +59,13 @@ required_constraints AS (
       AND convalidated
 ),
 required_indexes AS (
-    SELECT
-        to_regclass(
-            'canonical_cloud__quote.canonical_context_owner_active_idx'
-        ) IS NOT NULL
-        AND to_regclass(
-            'canonical_cloud__quote.canonical_context_one_active_per_owner_idx'
-        ) IS NOT NULL
-        AND to_regclass(
-            'canonical_cloud__quote.canonical_quote_owner_created_idx'
-        ) IS NOT NULL
-        AND to_regclass(
-            'canonical_cloud__quote.canonical_quote_operation_quote_created_idx'
-        ) IS NOT NULL
-        AND to_regclass(
-            'canonical_cloud__quote.canonical_quote_event_quote_sequence_idx'
-        ) IS NOT NULL
-        AND to_regclass(
-            'canonical_cloud__quote.canonical_model_attempt_quote_started_idx'
-        ) IS NOT NULL
-        AND to_regclass(
-            'canonical_cloud__quote.canonical_readiness_observation_owner_received_idx'
-        ) IS NOT NULL AS ok
+    SELECT to_regclass(
+        'canonical_cloud__quote.canonical_readiness_observation_owner_received_idx'
+    ) IS NOT NULL AS ok
 ),
 runtime_privileges AS (
     SELECT
-        has_schema_privilege(
-            current_user,
-            'canonical_cloud__quote',
-            'USAGE'
-        )
-        AND NOT has_schema_privilege(
-            current_user,
-            'canonical_cloud__quote',
-            'CREATE'
-        )
-        AND NOT has_schema_privilege(
-            current_user,
-            'public',
-            'CREATE'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_context',
-            'SELECT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_context',
-            'INSERT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_context',
-            'UPDATE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_context',
-            'DELETE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_context',
-            'TRUNCATE'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote',
-            'SELECT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote',
-            'INSERT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote',
-            'UPDATE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote',
-            'DELETE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote',
-            'TRUNCATE'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_operation',
-            'SELECT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_operation',
-            'INSERT'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_operation',
-            'UPDATE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_operation',
-            'DELETE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_operation',
-            'TRUNCATE'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_event',
-            'SELECT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_event',
-            'INSERT'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_event',
-            'UPDATE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_event',
-            'DELETE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_event',
-            'TRUNCATE'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_model_attempt',
-            'SELECT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_model_attempt',
-            'INSERT'
-        )
-        AND has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_model_attempt',
-            'UPDATE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_model_attempt',
-            'DELETE'
-        )
-        AND NOT has_table_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_model_attempt',
-            'TRUNCATE'
-        )
-        AND has_table_privilege(
+        has_table_privilege(
             current_user,
             'canonical_cloud__quote.canonical_readiness_observation',
             'SELECT'
@@ -306,23 +89,10 @@ runtime_privileges AS (
             current_user,
             'canonical_cloud__quote.canonical_readiness_observation',
             'TRUNCATE'
-        )
-        AND has_sequence_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_quote_event_sequence_id_seq',
-            'USAGE'
-        )
-        AND has_function_privilege(
-            current_user,
-            'canonical_cloud__quote.canonical_set_updated_at()',
-            'EXECUTE'
         ) AS ok
 )
 SELECT
-    COALESCE((SELECT ok FROM runtime_role), FALSE)
-    AND COALESCE((SELECT ok FROM search_path_contract), FALSE)
-    AND COALESCE((SELECT ok FROM object_ownership), FALSE)
-    AND COALESCE((SELECT ok FROM rls_tables), FALSE)
+    COALESCE((SELECT ok FROM observation_table), FALSE)
     AND COALESCE((SELECT ok FROM owner_policies), FALSE)
     AND COALESCE((SELECT ok FROM required_constraints), FALSE)
     AND COALESCE((SELECT ok FROM required_indexes), FALSE)
@@ -344,7 +114,10 @@ struct NotReadyResponse {
     message: &'static str,
 }
 
-pub fn router(database: Option<DatabaseConnection>) -> Router {
+/// Quote store (canonical-orm-core) plus the API-local observation ledger pool.
+pub type ReadinessDatabase = (QuoteStore, DatabaseConnection);
+
+pub fn router(database: Option<ReadinessDatabase>) -> Router {
     Router::new().route(
         "/readyz",
         get(move || {
@@ -354,15 +127,20 @@ pub fn router(database: Option<DatabaseConnection>) -> Router {
     )
 }
 
-async fn readiness(database: Option<DatabaseConnection>) -> Response {
-    let Some(database) = database else {
+async fn readiness(database: Option<ReadinessDatabase>) -> Response {
+    let Some((quotes, observations)) = database else {
         return not_ready(
             "database_not_configured",
             "PostgreSQL is required before the Canonical quote API can receive traffic",
         );
     };
 
-    match check_database(&database).await {
+    let checked = match quotes.readiness().await {
+        Ok(()) => check_observation_ledger(&observations).await,
+        Err(error) => Err(error),
+    };
+
+    match checked {
         Ok(()) => Json(ReadyResponse {
             database_ready: true,
             service: "canonical-api-server",
@@ -384,24 +162,24 @@ async fn readiness(database: Option<DatabaseConnection>) -> Response {
     }
 }
 
-async fn check_database(database: &DatabaseConnection) -> Result<(), DbErr> {
+async fn check_observation_ledger(database: &DatabaseConnection) -> Result<(), DbErr> {
     if database.get_database_backend() != DatabaseBackend::Postgres {
         return Err(DbErr::Custom(
-            "Canonical quote readiness requires PostgreSQL".into(),
+            "Canonical readiness observation ledger requires PostgreSQL".into(),
         ));
     }
 
     let row = database
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Postgres,
-            READINESS_SQL.to_owned(),
+            OBSERVATION_READINESS_SQL.to_owned(),
         ))
         .await?
         .ok_or_else(|| DbErr::Custom("readiness query returned no row".into()))?;
 
     if !row.try_get::<bool>("", "ready")? {
         return Err(DbErr::Custom(
-            "quote/readiness namespace, role, ownership, RLS, constraints, indexes, or grants are incomplete"
+            "readiness observation ledger RLS, constraints, indexes, or grants are incomplete"
                 .into(),
         ));
     }
@@ -419,27 +197,19 @@ fn not_ready(code: &'static str, message: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::READINESS_SQL;
+    use super::OBSERVATION_READINESS_SQL;
 
     #[test]
-    fn readiness_contract_names_every_security_boundary() {
+    fn observation_readiness_names_every_security_boundary() {
         for required in [
-            "canonical_cloud__quote__api_rw",
-            "canonical_cloud__quote__migrator",
-            "canonical_quote_context_owner_fk",
-            "canonical_quote_operation_quote_owner_fk",
-            "canonical_quote_operation_owner_policy",
-            "canonical_quote_event_quote_owner_fk",
-            "canonical_model_attempt_quote_owner_fk",
-            "canonical_model_attempt_status_finished_check",
-            "canonical_context_one_active_per_owner_idx",
             "canonical_readiness_observation_owner_policy",
             "canonical_readiness_observation_owner_received_idx",
             "canonical_readiness_observation_substantive_review_check",
-            "rolbypassrls",
+            "canonical_cloud__quote__migrator",
+            "relforcerowsecurity",
             "has_table_privilege",
         ] {
-            assert!(READINESS_SQL.contains(required), "{required}");
+            assert!(OBSERVATION_READINESS_SQL.contains(required), "{required}");
         }
     }
 }
