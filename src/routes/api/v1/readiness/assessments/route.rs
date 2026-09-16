@@ -1,27 +1,15 @@
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::{IntoResponse, Response},
-    Json,
-};
-use serde_json::Value as JsonValue;
+use axum::{extract::{Request, State}, response::Response};
 
-use crate::AppState;
-
-/// GET /api/v1/readiness/assessments -> `list_readiness_assessments`.
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    crate::list_readiness_assessments(State(state), headers)
-        .await
-        .into_response()
+pub async fn get(
+    State(state): State<super::FilesystemRouteState>,
+    request: Request,
+) -> Response {
+    super::forward_filesystem_request(state, request).await
 }
 
-/// POST /api/v1/readiness/assessments -> `create_readiness_assessment`.
 pub async fn post(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(payload): Json<JsonValue>,
+    State(state): State<super::FilesystemRouteState>,
+    request: Request,
 ) -> Response {
-    crate::create_readiness_assessment(State(state), headers, Json(payload))
-        .await
-        .into_response()
+    super::forward_filesystem_request(state, request).await
 }
