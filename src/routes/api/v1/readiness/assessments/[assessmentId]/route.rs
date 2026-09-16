@@ -1,20 +1,8 @@
-use axum::{
-    extract::{Path, State},
-    http::HeaderMap,
-    response::{IntoResponse, Response},
-};
-use uuid::Uuid;
+use axum::{extract::{Request, State}, response::Response};
 
-use crate::AppState;
-
-/// GET /api/v1/readiness/assessments/{assessmentId}
-/// -> `get_readiness_assessment`.
 pub async fn get(
-    State(state): State<AppState>,
-    Path(assessment_id): Path<Uuid>,
-    headers: HeaderMap,
+    State(state): State<super::FilesystemRouteState>,
+    request: Request,
 ) -> Response {
-    crate::get_readiness_assessment(State(state), Path(assessment_id), headers)
-        .await
-        .into_response()
+    super::forward_filesystem_request(state, request).await
 }
