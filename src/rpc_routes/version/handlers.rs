@@ -10,14 +10,14 @@ pub(crate) struct VersionResult {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct OperationEnvelope<T> {
-    pub result: T,
+pub(crate) struct VersionResponse {
+    pub result: VersionResult,
     #[serde(rename = "traceIds")]
     pub trace_ids: Vec<String>,
 }
 
-impl<T> OperationEnvelope<T> {
-    fn new(result: T, trace_id: &'static str) -> Self {
+impl VersionResponse {
+    fn new(result: VersionResult, trace_id: &'static str) -> Self {
         Self {
             result,
             trace_ids: vec![trace_id.to_owned()],
@@ -42,7 +42,7 @@ impl OperationSpec for VersionOperation {
     type Query = NoSection;
     type RequestHeaders = NoSection;
     type RequestBody = NoSection;
-    type ResponseBody = OperationEnvelope<VersionResult>;
+    type ResponseBody = VersionResponse;
     type ResponseHeaders = NoSection;
     type ResponseTrailers = NoSection;
     type Error = VersionError;
@@ -62,8 +62,8 @@ impl OperationSpec for VersionOperation {
 )]
 pub(crate) async fn get_version(
     _ctx: TypedOperationContext<AppState, VersionOperation>,
-) -> Result<OperationEnvelope<VersionResult>, VersionError> {
-    Ok(OperationEnvelope::new(
+) -> Result<VersionResponse, VersionError> {
+    Ok(VersionResponse::new(
         VersionResult {
             service: "canonical-api-server".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
