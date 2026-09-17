@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 use shared_auth_client::SharedAuthClient;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct GetUserByIdHeaders {
+pub(crate) struct UserLookupHeaders {
     pub authorization: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct GetUserByIdRequest {
+pub(crate) struct FindUserByIdRequest {
     pub user_id: String,
 }
 
@@ -23,13 +23,33 @@ pub(crate) struct UserSummary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct GetUserByIdResponse {
+pub(crate) struct FindUsersResponse {
+    pub results: Vec<UserSummary>,
+    #[serde(rename = "traceIds")]
+    pub trace_ids: Vec<String>,
+}
+
+impl FindUsersResponse {
+    fn new(results: Vec<UserSummary>, trace_id: &'static str) -> Self {
+        Self {
+            results,
+            trace_ids: vec![trace_id.to_owned()],
+        }
+    }
+
+    pub(crate) fn prepend_trace_id(&mut self, trace_id: &'static str) {
+        self.trace_ids.insert(0, trace_id.to_owned());
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct FindUserByIdResponse {
     pub result: UserSummary,
     #[serde(rename = "traceIds")]
     pub trace_ids: Vec<String>,
 }
 
-impl GetUserByIdResponse {
+impl FindUserByIdResponse {
     fn new(result: UserSummary, trace_id: &'static str) -> Self {
         Self {
             result,
@@ -43,90 +63,166 @@ impl GetUserByIdResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct GetUserByIdError {
+pub(crate) struct UserLookupError {
     pub code: String,
     pub message: String,
 }
 
-pub(crate) struct GetUserByIdOperation;
+pub(crate) struct FindUsersOperation;
 
-impl OperationSpec for GetUserByIdOperation {
+impl OperationSpec for FindUsersOperation {
     type Path = NoSection;
     type Query = NoSection;
-    type RequestHeaders = GetUserByIdHeaders;
-    type RequestBody = GetUserByIdRequest;
-    type ResponseBody = GetUserByIdResponse;
+    type RequestHeaders = UserLookupHeaders;
+    type RequestBody = NoSection;
+    type ResponseBody = FindUsersResponse;
     type ResponseHeaders = NoSection;
     type ResponseTrailers = NoSection;
-    type Error = GetUserByIdError;
+    type Error = UserLookupError;
 
-    const KEY: &'static str = "canonical_cloud.user.get_user_by_id";
+    const KEY: &'static str = "canonical_cloud.user.find_users";
     const CODECS: &'static [RpcPayloadCodec] = &[RpcPayloadCodec::Json];
     const DEFAULT_CODEC: RpcPayloadCodec = RpcPayloadCodec::Json;
 }
 
 #[ores_operation(
-    spec = GetUserByIdOperation,
-    key = "canonical_cloud.user.get_user_by_id",
+    spec = FindUsersOperation,
+    key = "canonical_cloud.user.find_users",
     codecs("json"),
     default_codec = "json",
-    audiences("server"),
+    audiences("browser", "server"),
     scope = "regular"
 )]
-pub(crate) async fn get_user_by_id(
-    ctx: TypedOperationContext<AppState, GetUserByIdOperation>,
-) -> Result<GetUserByIdResponse, GetUserByIdError> {
-    let headers = ctx.headers().map_err(|error| rpc_error("headers_missing", error.to_string()))?;
-    let body = ctx.body().map_err(|error| rpc_error("body_missing", error.to_string()))?;
+pub(crate) async fn find_users(
+    ctx: TypedOperationContext<AppState, FindUsersOperation>,
+) -> Result<FindUsersResponse, UserLookupError> {
+    let headers = ctx
+        .headers()
+        .map_err(|error| rpc_error("headers_missing", error.to_string()))?;
+    let token = bearer_token(&headers.authorization)?;
+    let raw = directory_client()?
+        .scim_list_users(token)
+        .await
+        .map_err(|error| rpc_error("user_lookup_failed", error.to_string()))?;
+    let resources = raw
+        .get("Resources")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| rpc_error("directory_response_invalid", "SCIM list response must contain Resources"))?;
+    let results = resources
+        .iter()
+        .map(|value| user_summary(value, None))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FindUsersResponse::new(
+        results,
+        "ores-trace-canonical-users-handler-f3Qm7vN2rKs",
+    ))
+}
+
+pub(crate) struct FindUserByIdOperation;
+
+impl OperationSpec for FindUserByIdOperation {
+    type Path = NoSection;
+    type Query = NoSection;
+    type RequestHeaders = UserLookupHeaders;
+    type RequestBody = FindUserByIdRequest;
+    type ResponseBody = FindUserByIdResponse;
+    type ResponseHeaders = NoSection;
+    type ResponseTrailers = NoSection;
+    type Error = UserLookupError;
+
+    const KEY: &'static str = "canonical_cloud.user.find_user_by_id";
+    const CODECS: &'static [RpcPayloadCodec] = &[RpcPayloadCodec::Json];
+    const DEFAULT_CODEC: RpcPayloadCodec = RpcPayloadCodec::Json;
+}
+
+#[ores_operation(
+    spec = FindUserByIdOperation,
+    key = "canonical_cloud.user.find_user_by_id",
+    codecs("json"),
+    default_codec = "json",
+    audiences("browser", "server"),
+    scope = "regular"
+)]
+pub(crate) async fn find_user_by_id(
+    ctx: TypedOperationContext<AppState, FindUserByIdOperation>,
+) -> Result<FindUserByIdResponse, UserLookupError> {
+    let headers = ctx
+        .headers()
+        .map_err(|error| rpc_error("headers_missing", error.to_string()))?;
+    let body = ctx
+        .body()
+        .map_err(|error| rpc_error("body_missing", error.to_string()))?;
     let token = bearer_token(&headers.authorization)?;
     let user_id = body.user_id.trim();
     if user_id.is_empty() || user_id.len() > 256 {
-        return Err(rpc_error("invalid_user_id", "user_id must contain 1..=256 characters"));
+        return Err(rpc_error(
+            "invalid_user_id",
+            "user_id must contain 1..=256 characters",
+        ));
     }
 
-    let base = std::env::var("SHARED_AUTH_BASE")
-        .map_err(|_| rpc_error("directory_not_configured", "SHARED_AUTH_BASE is not configured"))?;
-    let client = SharedAuthClient::try_new(base)
-        .map_err(|error| rpc_error("directory_not_configured", error.to_string()))?;
-    let raw = client
+    let raw = directory_client()?
         .scim_get_user(token, user_id)
         .await
         .map_err(|error| rpc_error("user_lookup_failed", error.to_string()))?;
-
-    Ok(GetUserByIdResponse::new(
-        UserSummary {
-            id: raw
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(user_id)
-                .to_owned(),
-            user_name: raw
-                .get("userName")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
-            display_name: raw
-                .get("displayName")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
-            active: raw.get("active").and_then(serde_json::Value::as_bool),
-        },
+    Ok(FindUserByIdResponse::new(
+        user_summary(&raw, Some(user_id))?,
         "ores-trace-canonical-user-handler-b7Qm3vN5rKs",
     ))
 }
 
-fn bearer_token(value: &str) -> Result<&str, GetUserByIdError> {
+fn directory_client() -> Result<SharedAuthClient, UserLookupError> {
+    let base = std::env::var("SHARED_AUTH_BASE")
+        .map_err(|_| rpc_error("directory_not_configured", "SHARED_AUTH_BASE is not configured"))?;
+    SharedAuthClient::try_new(base)
+        .map_err(|error| rpc_error("directory_not_configured", error.to_string()))
+}
+
+fn bearer_token(value: &str) -> Result<&str, UserLookupError> {
     let token = value
         .strip_prefix("Bearer ")
         .filter(|token| !token.is_empty() && token.len() <= 8192)
-        .ok_or_else(|| rpc_error("authorization_required", "Authorization: Bearer <token> is required"))?;
+        .ok_or_else(|| {
+            rpc_error(
+                "authorization_required",
+                "Authorization: Bearer <token> is required",
+            )
+        })?;
     if token.chars().any(char::is_whitespace) || token.chars().any(char::is_control) {
-        return Err(rpc_error("authorization_invalid", "bearer token is malformed"));
+        return Err(rpc_error(
+            "authorization_invalid",
+            "bearer token is malformed",
+        ));
     }
     Ok(token)
 }
 
-fn rpc_error(code: impl Into<String>, message: impl Into<String>) -> GetUserByIdError {
-    GetUserByIdError {
+fn user_summary(
+    raw: &serde_json::Value,
+    fallback_id: Option<&str>,
+) -> Result<UserSummary, UserLookupError> {
+    let id = raw
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .or(fallback_id)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| rpc_error("directory_response_invalid", "SCIM user is missing id"))?;
+    Ok(UserSummary {
+        id: id.to_owned(),
+        user_name: raw
+            .get("userName")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        display_name: raw
+            .get("displayName")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        active: raw.get("active").and_then(serde_json::Value::as_bool),
+    })
+}
+
+fn rpc_error(code: impl Into<String>, message: impl Into<String>) -> UserLookupError {
+    UserLookupError {
         code: code.into(),
         message: message.into(),
     }
