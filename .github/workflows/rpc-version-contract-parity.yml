@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: rpc-regular-contract-${{ github.workflow }}-${{ github.ref }}
@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Verify checked-out revision
         shell: bash
@@ -49,6 +49,16 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install Rust for lock regeneration
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+
+      - name: Regenerate Cargo.lock from Cargo.toml
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: cargo generate-lockfile
 
       - name: Generate peer-authority receipt and Contract IR
         uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
@@ -73,6 +83,21 @@ jobs:
       - name: Verify authored authorities were not modified
         shell: bash
         run: git diff --exit-code -- contracts/rpc/version/
+
+      - name: Materialize reproducibility evidence on this PR branch
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Cargo.lock .typespec-json-schema-validator/report.json .typespec-json-schema-validator/contract-ir.json
+          if git diff --cached --quiet; then
+            echo "reproducibility evidence already current"
+          else
+            git config user.name "ores-stack-rpc-bot"
+            git config user.email "ores-stack-rpc-bot@users.noreply.github.com"
+            git commit -m "chore(rpc): materialize lock and contract evidence [skip ci]"
+            git push origin "HEAD:${{ github.head_ref }}"
+          fi
 
       - name: Require committed current evidence
         shell: bash
