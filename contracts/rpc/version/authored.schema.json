@@ -6,99 +6,197 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
-      "required": ["result", "traceIds"],
+      "required": [
+        "result",
+        "traceIds"
+      ],
       "properties": {
         "result": {
           "type": "object",
           "unevaluatedProperties": false,
-          "required": ["service", "version"],
+          "required": [
+            "service",
+            "version"
+          ],
           "properties": {
-            "service": { "type": "string" },
-            "version": { "type": "string" }
+            "service": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
           }
         },
-        "traceIds": { "type": "array", "items": { "type": "string" } }
+        "traceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "VersionError": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
-      "required": ["code", "message"],
+      "required": [
+        "code",
+        "message"
+      ],
       "properties": {
-        "code": { "type": "string" },
-        "message": { "type": "string" }
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
       }
     },
     "UserLookupHeaders": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
-      "required": ["authorization"],
+      "required": [
+        "authorization"
+      ],
       "properties": {
-        "authorization": { "type": "string", "minLength": 8, "maxLength": 8199 }
+        "authorization": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 8199
+        }
       }
+    },
+    "FindUsersRequest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "query",
+        "limit"
+      ],
+      "unevaluatedProperties": false
     },
     "FindUsersResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
-      "required": ["results", "traceIds"],
+      "required": [
+        "results",
+        "traceIds"
+      ],
       "properties": {
         "results": {
           "type": "array",
           "items": {
             "type": "object",
             "unevaluatedProperties": false,
-            "required": ["id"],
+            "required": [
+              "id"
+            ],
             "properties": {
-              "id": { "type": "string" },
-              "user_name": { "type": "string" },
-              "display_name": { "type": "string" },
-              "active": { "type": "boolean" }
+              "id": {
+                "type": "string"
+              },
+              "user_name": {
+                "type": "string"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "active": {
+                "type": "boolean"
+              }
             }
           }
         },
-        "traceIds": { "type": "array", "items": { "type": "string" } }
+        "traceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "FindUserByIdRequest": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
-      "required": ["user_id"],
+      "required": [
+        "user_id"
+      ],
       "properties": {
-        "user_id": { "type": "string", "minLength": 1, "maxLength": 256 }
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
       }
     },
     "FindUserByIdResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
-      "required": ["result", "traceIds"],
+      "required": [
+        "result",
+        "traceIds"
+      ],
       "properties": {
         "result": {
           "type": "object",
           "unevaluatedProperties": false,
-          "required": ["id"],
+          "required": [
+            "id"
+          ],
           "properties": {
-            "id": { "type": "string" },
-            "user_name": { "type": "string" },
-            "display_name": { "type": "string" },
-            "active": { "type": "boolean" }
+            "id": {
+              "type": "string"
+            },
+            "user_name": {
+              "type": "string"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "active": {
+              "type": "boolean"
+            }
           }
         },
-        "traceIds": { "type": "array", "items": { "type": "string" } }
+        "traceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "UserLookupError": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
-      "required": ["code", "message"],
+      "required": [
+        "code",
+        "message"
+      ],
       "properties": {
-        "code": { "type": "string" },
-        "message": { "type": "string" }
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
       }
     }
   }
