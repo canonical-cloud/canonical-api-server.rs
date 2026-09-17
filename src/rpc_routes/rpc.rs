@@ -10,7 +10,7 @@ use ores_api_docs::{
     RouteMap, RpcV1Call, RpcV1Dispatcher, RpcV1HttpContext, RpcV1Receipt, rpc_v1_router,
 };
 
-use super::version;
+use super::{user, version};
 
 #[derive(Clone)]
 struct Dispatcher {
@@ -28,6 +28,9 @@ impl RpcV1Dispatcher for Dispatcher {
             match call.key.as_str() {
                 "canonical_cloud.version.get_version" => {
                     version::rpc::dispatch!(state, context, call)
+                }
+                "canonical_cloud.user.get_user_by_id" => {
+                    user::rpc::dispatch!(state, context, call)
                 }
                 _ => unreachable!("rpc_v1_router rejects unknown operation keys before dispatch"),
             }
@@ -50,6 +53,13 @@ fn route_map() -> RouteMap {
               "methods":["GET"],
               "rpc_key":"canonical_cloud.version.get_version",
               "authorization":{"mode":"public"},
+              "transports":["http"]
+            },
+            "user_get_by_id":{
+              "path":"/v1/get-user-by-id",
+              "methods":["POST"],
+              "rpc_key":"canonical_cloud.user.get_user_by_id",
+              "authorization":{"mode":"authenticated"},
               "transports":["http"]
             }
           }
