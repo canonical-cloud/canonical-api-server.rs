@@ -68,7 +68,7 @@ jobs:
           typespec: contracts/rpc/version/main.tsp
           schema: contracts/rpc/version/authored.schema.json
           generated_schema: .typespec-json-schema-validator/generated/typespec.generated.schema.json
-          expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError","CanonicalCloud.Rpc.Version.GetUserByIdHeaders","CanonicalCloud.Rpc.Version.GetUserByIdRequest","CanonicalCloud.Rpc.Version.GetUserByIdResponse","CanonicalCloud.Rpc.Version.GetUserByIdError"]'
+          expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError","CanonicalCloud.Rpc.Version.UserLookupHeaders","CanonicalCloud.Rpc.Version.FindUsersResponse","CanonicalCloud.Rpc.Version.FindUserByIdRequest","CanonicalCloud.Rpc.Version.FindUserByIdResponse","CanonicalCloud.Rpc.Version.UserLookupError"]'
 
       - name: Verify authored authorities were not modified
         shell: bash
