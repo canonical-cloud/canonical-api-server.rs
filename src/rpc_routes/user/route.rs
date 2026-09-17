@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode, header::CACHE_CONTROL},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::post as axum_post,
 };
 use canonical_api_server::AppState;
 use ores_api_docs::{
@@ -15,11 +15,11 @@ use ores_api_docs_operation_macros::ores_route;
 use super::handlers::{self, GetUserByIdHeaders, GetUserByIdOperation, GetUserByIdRequest};
 
 pub(super) fn router() -> Router<AppState> {
-    Router::new().route("/v1/get-user-by-id", post(post_user))
+    Router::new().route("/v1/get-user-by-id", axum_post(post))
 }
 
 #[ores_route(operation = handlers::get_user_by_id)]
-pub async fn post_user(
+pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<GetUserByIdRequest>,
