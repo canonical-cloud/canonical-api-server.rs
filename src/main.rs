@@ -2,6 +2,7 @@
 
 mod readiness;
 mod readiness_observation_ingest;
+mod rpc_routes;
 mod shutdown;
 mod telemetry;
 
@@ -70,7 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_shared_auth(client, config.shared_auth_audience);
     }
 
-    let app = build_router(state)
+    let app = build_router(state.clone())
+        .merge(rpc_routes::router(state))
         .merge(readiness::router(readiness_database))
         .merge(readiness_observation_ingest::router(observation_service));
     info!(
