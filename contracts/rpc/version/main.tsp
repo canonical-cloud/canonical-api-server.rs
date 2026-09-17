@@ -25,12 +25,16 @@ model VersionError {
 @jsonSchema
 @extension("unevaluatedProperties", false)
 model GetUserByIdHeaders {
+  @minLength(8)
+  @maxLength(8199)
   authorization: string;
 }
 
 @jsonSchema
 @extension("unevaluatedProperties", false)
 model GetUserByIdRequest {
+  @minLength(1)
+  @maxLength(256)
   user_id: string;
 }
 
