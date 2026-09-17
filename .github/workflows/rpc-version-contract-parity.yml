@@ -23,6 +23,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: rpc-version-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   parity:
     runs-on: ubuntu-latest
@@ -43,7 +47,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Generate peer-authority receipt and Contract IR
-        uses: ORESoftware/typespec-json-schema-validator@5b04b08512f8a03a376dcb96818969e2d83c2d84
+        uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
         with:
           typespec: contracts/rpc/version/main.tsp
           schema: contracts/rpc/version/authored.schema.json
@@ -53,7 +57,7 @@ jobs:
           max_probes: "128"
 
       - name: Require admitted version payload declarations
-        uses: ORESoftware/typespec-json-schema-validator/actions/test-consumer-admission@5b04b08512f8a03a376dcb96818969e2d83c2d84
+        uses: ORESoftware/typespec-json-schema-validator/actions/test-consumer-admission@bd503465dab8c5148fee722b443ed04ff126c9bf
         with:
           contract_ir: .typespec-json-schema-validator/contract-ir.json
           report: .typespec-json-schema-validator/report.json
@@ -61,6 +65,10 @@ jobs:
           schema: contracts/rpc/version/authored.schema.json
           generated_schema: .typespec-json-schema-validator/generated/typespec.generated.schema.json
           expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError"]'
+
+      - name: Verify authored authorities were not modified
+        shell: bash
+        run: git diff --exit-code -- contracts/rpc/version/
 
       - name: Require committed current evidence
         shell: bash
