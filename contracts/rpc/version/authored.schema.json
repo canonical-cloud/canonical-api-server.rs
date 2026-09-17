@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:canonical-cloud:rpc:version:v1",
+  "$id": "urn:canonical-cloud:rpc:regular:v1",
   "$defs": {
     "VersionResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17,13 +17,60 @@
             "version": { "type": "string" }
           }
         },
-        "traceIds": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
+        "traceIds": { "type": "array", "items": { "type": "string" } }
       }
     },
     "VersionError": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "GetUserByIdHeaders": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["authorization"],
+      "properties": {
+        "authorization": { "type": "string", "minLength": 8, "maxLength": 8199 }
+      }
+    },
+    "GetUserByIdRequest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["user_id"],
+      "properties": {
+        "user_id": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "UserSummary": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "user_name": { "type": "string" },
+        "display_name": { "type": "string" },
+        "active": { "type": "boolean" }
+      }
+    },
+    "GetUserByIdResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["result", "traceIds"],
+      "properties": {
+        "result": { "$ref": "#/$defs/UserSummary" },
+        "traceIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "GetUserByIdError": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
