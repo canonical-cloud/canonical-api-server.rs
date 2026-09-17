@@ -48,25 +48,23 @@
         "user_id": { "type": "string", "minLength": 1, "maxLength": 256 }
       }
     },
-    "UserSummary": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "type": "object",
-      "unevaluatedProperties": false,
-      "required": ["id"],
-      "properties": {
-        "id": { "type": "string" },
-        "user_name": { "type": "string" },
-        "display_name": { "type": "string" },
-        "active": { "type": "boolean" }
-      }
-    },
     "GetUserByIdResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
       "required": ["result", "traceIds"],
       "properties": {
-        "result": { "$ref": "#/$defs/UserSummary" },
+        "result": {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string" },
+            "user_name": { "type": "string" },
+            "display_name": { "type": "string" },
+            "active": { "type": "boolean" }
+          }
+        },
         "traceIds": { "type": "array", "items": { "type": "string" } }
       }
     },
