@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "service": "canonical-api-server",
+  "authority": "handlers.rs",
+  "operations": [
+    {
+      "key": "canonical_cloud.version.get_version",
+      "handler": "get_version",
+      "spec": "VersionOperation",
+      "state": "AppState",
+      "response": "OperationEnvelope<VersionResult>",
+      "error": "VersionError",
+      "scope": "regular",
+      "audiences": [
+        "browser",
+        "server"
+      ],
+      "codecs": [
+        "json"
+      ],
+      "default_codec": "json",
+      "handlers_source": "src/rpc_routes/version/handlers.rs",
+      "route_source": "src/rpc_routes/version/route.rs",
+      "method": "GET",
+      "path": "/v1/version",
+      "rpc_enabled": true
+    }
+  ]
+}
