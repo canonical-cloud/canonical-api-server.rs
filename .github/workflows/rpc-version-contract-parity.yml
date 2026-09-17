@@ -55,6 +55,16 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Configure approved cross-repo GitHub dependency access
+        shell: bash
+        env:
+          SYNC_FLEET_TOKEN: ${{ secrets.SYNC_FLEET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${SYNC_FLEET_TOKEN:-}" ]]; then
+            git config --global url."https://x-access-token:${SYNC_FLEET_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
       - name: Regenerate Cargo.lock from Cargo.toml
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
