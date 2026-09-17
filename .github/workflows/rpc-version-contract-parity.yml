@@ -137,3 +137,782 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+
+  cross-source-evidence:
+    name: deterministic cross-source TJSV evidence
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact evidence-factory head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Prepare sonus-regular exact authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname 'contracts/rpc-version/main.tsp')" .rpc-cross-evidence/sonus-regular/generated
+          cat > 'contracts/rpc-version/main.tsp' <<'TSP_EOF'
+          // Independently authored TypeSpec authority for regular Sonus RPC semantic payloads.
+          // JSON Schema generated from this file is comparison evidence only.
+          import "@typespec/json-schema";
+          using TypeSpec.JsonSchema;
+          
+          namespace SonusAurisVersion;
+          
+          // Keep operation response structures inline: typed api-docs SDK generation
+          // deliberately rejects JSON Schema $ref rather than degrading semantic payloads.
+          @id("VersionResponse")
+          model VersionResponse {
+            result: {
+              service: string;
+              semver: string;
+              calver: string;
+              git_sha: string;
+              @minValue(0)
+              @maxValue(65535)
+              protocol_min: integer;
+              @minValue(0)
+              @maxValue(65535)
+              protocol_max: integer;
+            };
+            traceIds: string[];
+          }
+          
+          @id("VersionError")
+          model VersionError {
+            code: string;
+            message: string;
+          }
+          
+          @id("UserLookupHeaders")
+          model UserLookupHeaders {
+            @minLength(8)
+            @maxLength(8199)
+            authorization: string;
+          }
+          
+          @id("FindUsersRequest")
+          model FindUsersRequest {
+            @minLength(1)
+            @maxLength(256)
+            query: string;
+            @minValue(1)
+            @maxValue(100)
+            limit: integer;
+          }
+          
+          @id("FindUsersResponse")
+          model FindUsersResponse {
+            results: {
+              id: string;
+              user_name?: string;
+              display_name?: string;
+              active?: boolean;
+            }[];
+            traceIds: string[];
+          }
+          
+          @id("FindUserByIdRequest")
+          model FindUserByIdRequest {
+            @minLength(1)
+            @maxLength(256)
+            user_id: string;
+          }
+          
+          @id("FindUserByIdResponse")
+          model FindUserByIdResponse {
+            result: {
+              id: string;
+              user_name?: string;
+              display_name?: string;
+              active?: boolean;
+            };
+            traceIds: string[];
+          }
+          
+          @id("UserLookupError")
+          model UserLookupError {
+            code: string;
+            message: string;
+          }
+          
+          TSP_EOF
+          cat > 'contracts/rpc-version/authored.schema.json' <<'SCHEMA_EOF'
+          {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "sonus-auris.rpc-regular.schema.json",
+            "$defs": {
+              "VersionResponse": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "VersionResponse",
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "type": "object",
+                    "properties": {
+                      "service": {
+                        "type": "string"
+                      },
+                      "semver": {
+                        "type": "string"
+                      },
+                      "calver": {
+                        "type": "string"
+                      },
+                      "git_sha": {
+                        "type": "string"
+                      },
+                      "protocol_min": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 65535
+                      },
+                      "protocol_max": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 65535
+                      }
+                    },
+                    "required": [
+                      "service",
+                      "semver",
+                      "calver",
+                      "git_sha",
+                      "protocol_min",
+                      "protocol_max"
+                    ],
+                    "unevaluatedProperties": false
+                  },
+                  "traceIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "result",
+                  "traceIds"
+                ],
+                "unevaluatedProperties": false
+              },
+              "VersionError": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "VersionError",
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "unevaluatedProperties": false
+              },
+              "UserLookupHeaders": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "UserLookupHeaders",
+                "type": "object",
+                "properties": {
+                  "authorization": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 8199
+                  }
+                },
+                "required": [
+                  "authorization"
+                ],
+                "unevaluatedProperties": false
+              },
+              "FindUsersRequest": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUsersRequest",
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "query",
+                  "limit"
+                ],
+                "unevaluatedProperties": false
+              },
+              "FindUsersResponse": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUsersResponse",
+                "type": "object",
+                "properties": {
+                  "results": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "user_name": {
+                          "type": "string"
+                        },
+                        "display_name": {
+                          "type": "string"
+                        },
+                        "active": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id"
+                      ],
+                      "unevaluatedProperties": false
+                    }
+                  },
+                  "traceIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "results",
+                  "traceIds"
+                ],
+                "unevaluatedProperties": false
+              },
+              "FindUserByIdRequest": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUserByIdRequest",
+                "type": "object",
+                "properties": {
+                  "user_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "user_id"
+                ],
+                "unevaluatedProperties": false
+              },
+              "FindUserByIdResponse": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUserByIdResponse",
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "user_name": {
+                        "type": "string"
+                      },
+                      "display_name": {
+                        "type": "string"
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "unevaluatedProperties": false
+                  },
+                  "traceIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "result",
+                  "traceIds"
+                ],
+                "unevaluatedProperties": false
+              },
+              "UserLookupError": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "UserLookupError",
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "unevaluatedProperties": false
+              }
+            }
+          }
+          
+          SCHEMA_EOF
+
+      - name: Generate sonus-regular TJSV evidence
+        uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
+        with:
+          typespec: contracts/rpc-version/main.tsp
+          schema: contracts/rpc-version/authored.schema.json
+          report: .rpc-cross-evidence/sonus-regular/report.json
+          sarif: ""
+          contract_ir: .rpc-cross-evidence/sonus-regular/contract-ir.json
+          output_dir: .rpc-cross-evidence/sonus-regular/generated
+          max_probes: "128"
+
+      - name: Admit sonus-regular exact declarations
+        uses: ORESoftware/typespec-json-schema-validator/actions/test-consumer-admission@bd503465dab8c5148fee722b443ed04ff126c9bf
+        with:
+          contract_ir: .rpc-cross-evidence/sonus-regular/contract-ir.json
+          report: .rpc-cross-evidence/sonus-regular/report.json
+          typespec: contracts/rpc-version/main.tsp
+          schema: contracts/rpc-version/authored.schema.json
+          generated_schema: .rpc-cross-evidence/sonus-regular/generated/typespec.generated.schema.json
+          expected_declarations: '["SonusAurisVersion.VersionError","SonusAurisVersion.VersionResponse","SonusAurisVersion.UserLookupHeaders","SonusAurisVersion.FindUsersResponse","SonusAurisVersion.FindUserByIdRequest","SonusAurisVersion.FindUserByIdResponse","SonusAurisVersion.UserLookupError"]'
+
+      - name: Prepare sonus-admin exact authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname 'contracts/rpc-version/main.tsp')" .rpc-cross-evidence/sonus-admin/generated
+          cat > 'contracts/rpc-version/main.tsp' <<'TSP_EOF'
+          // Independently authored TypeSpec authority for Sonus admin RPC semantic payloads.
+          // JSON Schema generated from this file is comparison evidence only.
+          import "@typespec/json-schema";
+          using TypeSpec.JsonSchema;
+          
+          namespace SonusAurisAdminVersion;
+          
+          // Keep operation response structures inline: typed api-docs SDK generation
+          // deliberately rejects JSON Schema $ref rather than degrading semantic payloads.
+          @id("VersionResponse")
+          model VersionResponse {
+            result: {
+              status: string;
+              service: string;
+              revision: string;
+            };
+            traceIds: string[];
+          }
+          
+          @id("VersionError")
+          model VersionError {
+            code: string;
+            message: string;
+          }
+          
+          @id("FindUsersHeaders")
+          model FindUsersHeaders {
+            @minLength(8)
+            @maxLength(8199)
+            authorization: string;
+          }
+          
+          @id("FindUsersRequest")
+          model FindUsersRequest {
+            @minLength(1)
+            @maxLength(256)
+            query: string;
+            @minValue(1)
+            @maxValue(100)
+            limit: integer;
+          }
+          
+          @id("FindUsersResponse")
+          model FindUsersResponse {
+            result: {
+              @maxItems(100)
+              users: {
+                id: string;
+                user_name?: string;
+                display_name?: string;
+                active?: boolean;
+              }[];
+              @minValue(0)
+              @maxValue(100)
+              count: integer;
+            };
+            traceIds: string[];
+          }
+          
+          @id("FindUsersError")
+          model FindUsersError {
+            code: string;
+            message: string;
+          }
+          
+          TSP_EOF
+          cat > 'contracts/rpc-version/authored.schema.json' <<'SCHEMA_EOF'
+          {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "sonus-auris.admin.rpc.schema.json",
+            "$defs": {
+              "VersionResponse": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "VersionResponse",
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "type": "object",
+                    "properties": {
+                      "status": { "type": "string" },
+                      "service": { "type": "string" },
+                      "revision": { "type": "string" }
+                    },
+                    "required": ["status", "service", "revision"],
+                    "unevaluatedProperties": false
+                  },
+                  "traceIds": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["result", "traceIds"],
+                "unevaluatedProperties": false
+              },
+              "VersionError": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "VersionError",
+                "type": "object",
+                "properties": {
+                  "code": { "type": "string" },
+                  "message": { "type": "string" }
+                },
+                "required": ["code", "message"],
+                "unevaluatedProperties": false
+              },
+              "FindUsersHeaders": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUsersHeaders",
+                "type": "object",
+                "properties": {
+                  "authorization": { "type": "string", "minLength": 8, "maxLength": 8199 }
+                },
+                "required": ["authorization"],
+                "unevaluatedProperties": false
+              },
+              "FindUsersRequest": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUsersRequest",
+                "type": "object",
+                "properties": {
+                  "query": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["query", "limit"],
+                "unevaluatedProperties": false
+              },
+              "FindUsersResponse": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUsersResponse",
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "type": "object",
+                    "properties": {
+                      "users": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": { "type": "string" },
+                            "user_name": { "type": "string" },
+                            "display_name": { "type": "string" },
+                            "active": { "type": "boolean" }
+                          },
+                          "required": ["id"],
+                          "unevaluatedProperties": false
+                        }
+                      },
+                      "count": { "type": "integer", "minimum": 0, "maximum": 100 }
+                    },
+                    "required": ["users", "count"],
+                    "unevaluatedProperties": false
+                  },
+                  "traceIds": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["result", "traceIds"],
+                "unevaluatedProperties": false
+              },
+              "FindUsersError": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "FindUsersError",
+                "type": "object",
+                "properties": {
+                  "code": { "type": "string" },
+                  "message": { "type": "string" }
+                },
+                "required": ["code", "message"],
+                "unevaluatedProperties": false
+              }
+            }
+          }
+          
+          SCHEMA_EOF
+
+      - name: Generate sonus-admin TJSV evidence
+        uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
+        with:
+          typespec: contracts/rpc-version/main.tsp
+          schema: contracts/rpc-version/authored.schema.json
+          report: .rpc-cross-evidence/sonus-admin/report.json
+          sarif: ""
+          contract_ir: .rpc-cross-evidence/sonus-admin/contract-ir.json
+          output_dir: .rpc-cross-evidence/sonus-admin/generated
+          max_probes: "128"
+
+      - name: Admit sonus-admin exact declarations
+        uses: ORESoftware/typespec-json-schema-validator/actions/test-consumer-admission@bd503465dab8c5148fee722b443ed04ff126c9bf
+        with:
+          contract_ir: .rpc-cross-evidence/sonus-admin/contract-ir.json
+          report: .rpc-cross-evidence/sonus-admin/report.json
+          typespec: contracts/rpc-version/main.tsp
+          schema: contracts/rpc-version/authored.schema.json
+          generated_schema: .rpc-cross-evidence/sonus-admin/generated/typespec.generated.schema.json
+          expected_declarations: '["SonusAurisAdminVersion.VersionError","SonusAurisAdminVersion.VersionResponse","SonusAurisAdminVersion.FindUsersHeaders","SonusAurisAdminVersion.FindUsersRequest","SonusAurisAdminVersion.FindUsersResponse","SonusAurisAdminVersion.FindUsersError"]'
+
+      - name: Prepare canonical-admin exact authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname 'contracts/rpc/version/main.tsp')" .rpc-cross-evidence/canonical-admin/generated
+          cat > 'contracts/rpc/version/main.tsp' <<'TSP_EOF'
+          // Independently authored TypeSpec authority for Canonical admin RPC semantic payloads.
+          // JSON Schema peer: authored.schema.json. Generated JSON Schema is comparison evidence only.
+          import "@typespec/json-schema";
+          using TypeSpec.JsonSchema;
+          
+          namespace CanonicalCloud.Admin.Rpc.Version;
+          
+          @jsonSchema
+          @extension("unevaluatedProperties", false)
+          model VersionResponse {
+            result: {
+              status: string;
+              service: string;
+              revision: string;
+            };
+            traceIds: string[];
+          }
+          
+          @jsonSchema
+          @extension("unevaluatedProperties", false)
+          model VersionError {
+            code: string;
+            message: string;
+          }
+          
+          @jsonSchema
+          @extension("unevaluatedProperties", false)
+          model FindUsersHeaders {
+            @minLength(8)
+            @maxLength(8199)
+            authorization: string;
+          }
+          
+          @jsonSchema
+          @extension("unevaluatedProperties", false)
+          model FindUsersRequest {
+            @minLength(1)
+            @maxLength(256)
+            query: string;
+            @minValue(1)
+            @maxValue(100)
+            limit: integer;
+          }
+          
+          @jsonSchema
+          @extension("unevaluatedProperties", false)
+          model FindUsersResponse {
+            result: {
+              @maxItems(100)
+              users: {
+                id: string;
+                user_name?: string;
+                display_name?: string;
+                active?: boolean;
+              }[];
+              @minValue(0)
+              @maxValue(100)
+              count: integer;
+            };
+            traceIds: string[];
+          }
+          
+          @jsonSchema
+          @extension("unevaluatedProperties", false)
+          model FindUsersError {
+            code: string;
+            message: string;
+          }
+          
+          TSP_EOF
+          cat > 'contracts/rpc/version/authored.schema.json' <<'SCHEMA_EOF'
+          {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "urn:canonical-cloud:admin:rpc:v1",
+            "$defs": {
+              "VersionResponse": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "unevaluatedProperties": false,
+                "required": ["result", "traceIds"],
+                "properties": {
+                  "result": {
+                    "type": "object",
+                    "unevaluatedProperties": false,
+                    "required": ["status", "service", "revision"],
+                    "properties": {
+                      "status": { "type": "string" },
+                      "service": { "type": "string" },
+                      "revision": { "type": "string" }
+                    }
+                  },
+                  "traceIds": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "VersionError": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "unevaluatedProperties": false,
+                "required": ["code", "message"],
+                "properties": {
+                  "code": { "type": "string" },
+                  "message": { "type": "string" }
+                }
+              },
+              "FindUsersHeaders": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "unevaluatedProperties": false,
+                "required": ["authorization"],
+                "properties": {
+                  "authorization": { "type": "string", "minLength": 8, "maxLength": 8199 }
+                }
+              },
+              "FindUsersRequest": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "unevaluatedProperties": false,
+                "required": ["query", "limit"],
+                "properties": {
+                  "query": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                }
+              },
+              "FindUsersResponse": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "unevaluatedProperties": false,
+                "required": ["result", "traceIds"],
+                "properties": {
+                  "result": {
+                    "type": "object",
+                    "unevaluatedProperties": false,
+                    "required": ["users", "count"],
+                    "properties": {
+                      "users": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                          "type": "object",
+                          "unevaluatedProperties": false,
+                          "required": ["id"],
+                          "properties": {
+                            "id": { "type": "string" },
+                            "user_name": { "type": "string" },
+                            "display_name": { "type": "string" },
+                            "active": { "type": "boolean" }
+                          }
+                        }
+                      },
+                      "count": { "type": "integer", "minimum": 0, "maximum": 100 }
+                    }
+                  },
+                  "traceIds": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "FindUsersError": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "unevaluatedProperties": false,
+                "required": ["code", "message"],
+                "properties": {
+                  "code": { "type": "string" },
+                  "message": { "type": "string" }
+                }
+              }
+            }
+          }
+          
+          SCHEMA_EOF
+
+      - name: Generate canonical-admin TJSV evidence
+        uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
+        with:
+          typespec: contracts/rpc/version/main.tsp
+          schema: contracts/rpc/version/authored.schema.json
+          report: .rpc-cross-evidence/canonical-admin/report.json
+          sarif: ""
+          contract_ir: .rpc-cross-evidence/canonical-admin/contract-ir.json
+          output_dir: .rpc-cross-evidence/canonical-admin/generated
+          max_probes: "128"
+
+      - name: Admit canonical-admin exact declarations
+        uses: ORESoftware/typespec-json-schema-validator/actions/test-consumer-admission@bd503465dab8c5148fee722b443ed04ff126c9bf
+        with:
+          contract_ir: .rpc-cross-evidence/canonical-admin/contract-ir.json
+          report: .rpc-cross-evidence/canonical-admin/report.json
+          typespec: contracts/rpc/version/main.tsp
+          schema: contracts/rpc/version/authored.schema.json
+          generated_schema: .rpc-cross-evidence/canonical-admin/generated/typespec.generated.schema.json
+          expected_declarations: '["CanonicalCloud.Admin.Rpc.Version.VersionResponse","CanonicalCloud.Admin.Rpc.Version.VersionError","CanonicalCloud.Admin.Rpc.Version.FindUsersHeaders","CanonicalCloud.Admin.Rpc.Version.FindUsersRequest","CanonicalCloud.Admin.Rpc.Version.FindUsersResponse","CanonicalCloud.Admin.Rpc.Version.FindUsersError"]'
+
+      - name: Restore factory repository authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore -- contracts/rpc/version || true
+          rm -rf contracts/rpc-version
+
+      - name: Commit exact generated cross-source evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -f .rpc-cross-evidence/sonus-regular/report.json .rpc-cross-evidence/sonus-regular/contract-ir.json \
+            .rpc-cross-evidence/sonus-admin/report.json .rpc-cross-evidence/sonus-admin/contract-ir.json \
+            .rpc-cross-evidence/canonical-admin/report.json .rpc-cross-evidence/canonical-admin/contract-ir.json
+          git config user.name "ores-stack-rpc-bot"
+          git config user.email "ores-stack-rpc-bot@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "cross-source evidence already current"
+          else
+            git commit -m "chore(rpc): materialize cross-source contract evidence"
+            git push origin "HEAD:${{ github.head_ref }}"
+          fi
