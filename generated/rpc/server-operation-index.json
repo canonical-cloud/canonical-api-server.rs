@@ -4,6 +4,31 @@
   "authority": "handlers.rs",
   "operations": [
     {
+      "key": "canonical_cloud.user.get_user_by_id",
+      "handler": "get_user_by_id",
+      "spec": "GetUserByIdOperation",
+      "state": "AppState",
+      "response": "GetUserByIdResponse",
+      "error": "GetUserByIdError",
+      "path_type": "NoSection",
+      "query_type": "NoSection",
+      "request_headers_type": "GetUserByIdHeaders",
+      "request_body_type": "GetUserByIdRequest",
+      "response_body_type": "GetUserByIdResponse",
+      "response_headers_type": "NoSection",
+      "response_trailers_type": "NoSection",
+      "error_type": "GetUserByIdError",
+      "scope": "regular",
+      "audiences": ["server"],
+      "codecs": ["json"],
+      "default_codec": "json",
+      "handlers_source": "src/rpc_routes/user/handlers.rs",
+      "route_source": "src/rpc_routes/user/route.rs",
+      "method": "POST",
+      "path": "/v1/get-user-by-id",
+      "rpc_enabled": true
+    },
+    {
       "key": "canonical_cloud.version.get_version",
       "handler": "get_version",
       "spec": "VersionOperation",
@@ -19,13 +44,8 @@
       "response_trailers_type": "NoSection",
       "error_type": "VersionError",
       "scope": "regular",
-      "audiences": [
-        "browser",
-        "server"
-      ],
-      "codecs": [
-        "json"
-      ],
+      "audiences": ["browser", "server"],
+      "codecs": ["json"],
       "default_codec": "json",
       "handlers_source": "src/rpc_routes/version/handlers.rs",
       "route_source": "src/rpc_routes/version/route.rs",
