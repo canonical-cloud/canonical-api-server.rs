@@ -13,7 +13,7 @@
       "path_type": "NoSection",
       "query_type": "NoSection",
       "request_headers_type": "UserLookupHeaders",
-      "request_body_type": "NoSection",
+      "request_body_type": "FindUsersRequest",
       "response_body_type": "FindUsersResponse",
       "response_headers_type": "NoSection",
       "response_trailers_type": "NoSection",
