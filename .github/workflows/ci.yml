@@ -29,6 +29,24 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
+      - name: Require committed RPC lockfile parity before network access
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^name = "ores-api-docs"$' Cargo.lock || {
+            echo "::error::Cargo.lock does not contain ores-api-docs; regenerate it after changing Cargo.toml" >&2
+            exit 1
+          }
+          grep -q '^name = "ores-api-docs-operation-macros"$' Cargo.lock || {
+            echo "::error::Cargo.lock does not contain ores-api-docs-operation-macros; regenerate it after changing Cargo.toml" >&2
+            exit 1
+          }
+          grep -q 'd44140871357b324a032260bdb3d0b6c10a3c779' Cargo.lock || {
+            echo "::error::Cargo.lock is not pinned to the merged api-docs runtime d44140871357b324a032260bdb3d0b6c10a3c779" >&2
+            exit 1
+          }
+          cargo metadata --locked --format-version 1 --no-deps >/dev/null
+
       - name: Fetch locked private dependencies with least privilege
         env:
           CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
