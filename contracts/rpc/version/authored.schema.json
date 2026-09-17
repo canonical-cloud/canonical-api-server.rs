@@ -30,7 +30,7 @@
         "message": { "type": "string" }
       }
     },
-    "GetUserByIdHeaders": {
+    "UserLookupHeaders": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
@@ -39,7 +39,30 @@
         "authorization": { "type": "string", "minLength": 8, "maxLength": 8199 }
       }
     },
-    "GetUserByIdRequest": {
+    "FindUsersResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["results", "traceIds"],
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "unevaluatedProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "user_name": { "type": "string" },
+              "display_name": { "type": "string" },
+              "active": { "type": "boolean" }
+            }
+          }
+        },
+        "traceIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "FindUserByIdRequest": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
@@ -48,7 +71,7 @@
         "user_id": { "type": "string", "minLength": 1, "maxLength": 256 }
       }
     },
-    "GetUserByIdResponse": {
+    "FindUserByIdResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
@@ -68,7 +91,7 @@
         "traceIds": { "type": "array", "items": { "type": "string" } }
       }
     },
-    "GetUserByIdError": {
+    "UserLookupError": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "unevaluatedProperties": false,
