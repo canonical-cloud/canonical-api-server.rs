@@ -1,0 +1,1043 @@
+{
+  "admissible": true,
+  "admission": {
+    "receipt": {
+      "digest": "1fdaf940ad29920c1086837f5f0e652435da307433a5428e578c83977916186d",
+      "runId": "26df632ad6785b7b930122d096f475c815bf8b408cde33eaa698629a6cb7286c",
+      "schema": "ores.typespec-json-schema-validator.report/v1",
+      "status": "passed",
+      "zeroUnexplainedFindings": true
+    },
+    "requirements": {
+      "differentialInstanceValidation": true,
+      "directDeclarationInventory": true,
+      "exactInputDigests": true,
+      "generatedSchemaComparison": true,
+      "zeroUnexplainedFindings": true
+    },
+    "scope": {
+      "admittedDeclarations": 8,
+      "complete": true,
+      "excludedDeclarations": 0,
+      "outOfScopeDeclarations": 0
+    }
+  },
+  "authorities": {
+    "generatedJsonSchema": "comparison-evidence-only",
+    "jsonSchema": "independently-authored",
+    "precedence": "none",
+    "typespec": "independently-authored"
+  },
+  "configuration": {
+    "bundleId": "typespec.generated.schema.json",
+    "differential": {
+      "enabled": true,
+      "formatAssertion": false,
+      "instanceCorpus": null,
+      "maxProbesPerDeclarationPerLane": 128
+    },
+    "emitter": "@typespec/json-schema",
+    "emitterOptions": {
+      "bundleId": "typespec.generated.schema.json",
+      "emitAllModels": "true",
+      "emitAllRefs": "true",
+      "emitter-output-dir": "/home/runner/work/canonical-api-server.rs/canonical-api-server.rs/.typespec-json-schema-validator/generated",
+      "file-type": "json",
+      "int64-strategy": "string",
+      "polymorphic-models-strategy": "oneOf",
+      "seal-object-schemas": "true"
+    },
+    "executionMode": "pinned-compiler-fallback",
+    "mappingSchema": "ores.typespec-json-schema-validator.mapping/v1",
+    "maxFindings": 250,
+    "mode": "check"
+  },
+  "coverage": {
+    "comparedDimensions": [
+      "top-level declaration names",
+      "declaration kind families",
+      "required and optional properties",
+      "nullability",
+      "scalar types and formats",
+      "numeric and string constraints",
+      "enums",
+      "unions and composition",
+      "references",
+      "defaults and annotations",
+      "additional and unevaluated property policy",
+      "instance-level verdict agreement over a synthesized probe corpus"
+    ],
+    "differentialInstanceValidation": true,
+    "directDeclarationInventory": true,
+    "outOfScopeTypeSpecDeclarations": [],
+    "sourceMutationCheck": true,
+    "typespecGeneratedJsonSchemaComparison": true
+  },
+  "declarations": [
+    {
+      "assertionDigest": "c0ef62f744a117d83102d6bd18c197ddd3a701fc19c8b665469f0500a9b98966",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.FindUserByIdRequest",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "FindUserByIdRequest",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "user_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "8463965162be61294fc00a383197caefd0cd0aebb4e4829d3b56c721e7cba052"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "FindUserByIdRequest",
+          "normalizedSchema": {
+            "$id": "FindUserByIdRequest.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "user_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "d14d833be4a5c16b999352c133eef1e8f1519b432df7aabafc27daa1cf5889e1"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "FindUserByIdRequest",
+        "generatedJsonSchema": "FindUserByIdRequest",
+        "typespec": "CanonicalCloud.Rpc.Version.FindUserByIdRequest"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/FindUserByIdRequest"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/FindUserByIdRequest"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 58
+        }
+      }
+    },
+    {
+      "assertionDigest": "2f86bb0f271f893117e57df3d2a7dbd57225f6587d67758ee7ecb9892c23be28",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "user_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "traceIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "result",
+          "traceIds"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.FindUserByIdResponse",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "FindUserByIdResponse",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "result": {
+                "properties": {
+                  "active": {
+                    "type": "boolean"
+                  },
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "user_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object",
+                "unevaluatedProperties": false
+              },
+              "traceIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "result",
+              "traceIds"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "5e3e493c86330953493ef9f7dd1f92c5b0561fbe4dbfa8478f53d348280b2200"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "FindUserByIdResponse",
+          "normalizedSchema": {
+            "$id": "FindUserByIdResponse.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "result": {
+                "properties": {
+                  "active": {
+                    "type": "boolean"
+                  },
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "user_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object",
+                "unevaluatedProperties": false
+              },
+              "traceIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "result",
+              "traceIds"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "d3a976ddb2acadf3781c00b8de1a4b88cd020dda9b6cef8f1bc8a2e15f18c4e6"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "FindUserByIdResponse",
+        "generatedJsonSchema": "FindUserByIdResponse",
+        "typespec": "CanonicalCloud.Rpc.Version.FindUserByIdResponse"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/FindUserByIdResponse"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/FindUserByIdResponse"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 66
+        }
+      }
+    },
+    {
+      "assertionDigest": "de4dcfdaf0097f1516dfb2fa00a15f314c41c8df636193f1b0830ad08afe14eb",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "limit",
+          "query"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.FindUsersRequest",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "FindUsersRequest",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "limit": {
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "query": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "limit",
+              "query"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "27e4d0de82dde1ce701aa02d1f1fba9de1e68350cfa77c3ea857e2af753ee563"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "FindUsersRequest",
+          "normalizedSchema": {
+            "$id": "FindUsersRequest.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "limit": {
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "query": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "limit",
+              "query"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "8baa1582b08fb6dce3ce4c7281bc6c1aeb4b0ff53ed232ebf24d9f74403821c9"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "FindUsersRequest",
+        "generatedJsonSchema": "FindUsersRequest",
+        "typespec": "CanonicalCloud.Rpc.Version.FindUsersRequest"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/FindUsersRequest"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/FindUsersRequest"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 35
+        }
+      }
+    },
+    {
+      "assertionDigest": "1bb8d6fc8a144d4763f3aab13c89545fc03a093562442975320a18b31da31dc1",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "user_name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "traceIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results",
+          "traceIds"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.FindUsersResponse",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "FindUsersResponse",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "results": {
+                "items": {
+                  "properties": {
+                    "active": {
+                      "type": "boolean"
+                    },
+                    "display_name": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "user_name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "type": "object",
+                  "unevaluatedProperties": false
+                },
+                "type": "array"
+              },
+              "traceIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "results",
+              "traceIds"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "a8c4facee1d0265ca93bbc12628e33f26aa81f6e53936dbaf12f5d19cdea86c6"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "FindUsersResponse",
+          "normalizedSchema": {
+            "$id": "FindUsersResponse.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "results": {
+                "items": {
+                  "properties": {
+                    "active": {
+                      "type": "boolean"
+                    },
+                    "display_name": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "user_name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "type": "object",
+                  "unevaluatedProperties": false
+                },
+                "type": "array"
+              },
+              "traceIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "results",
+              "traceIds"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "7c16695600a4442768ec761d0d8493c4e84423bc2b1eafd03a00d329b4f34220"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "FindUsersResponse",
+        "generatedJsonSchema": "FindUsersResponse",
+        "typespec": "CanonicalCloud.Rpc.Version.FindUsersResponse"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/FindUsersResponse"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/FindUsersResponse"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 46
+        }
+      }
+    },
+    {
+      "assertionDigest": "d2c0d03b1db2ba4a62bc179015423a9ac6a3fdcb9ddb903b830e8768da8fdb44",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.UserLookupError",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "UserLookupError",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "e233f5bf4618182ce5b62edb08b9be1fa5624e5004cb05579c868af71ec1677e"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "UserLookupError",
+          "normalizedSchema": {
+            "$id": "UserLookupError.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "6d31623caf38f75b9f03e6c14a599f1cf0d5c9602a93f6f96fe5eadcef31e7c8"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "UserLookupError",
+        "generatedJsonSchema": "UserLookupError",
+        "typespec": "CanonicalCloud.Rpc.Version.UserLookupError"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/UserLookupError"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/UserLookupError"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 78
+        }
+      }
+    },
+    {
+      "assertionDigest": "7cd355ce6d98ad06280a52d5af08b1bcc24eb5ebcb1c6f3f515376b3e603476d",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "maxLength": 8199,
+            "minLength": 8,
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.UserLookupHeaders",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "UserLookupHeaders",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "authorization": {
+                "maxLength": 8199,
+                "minLength": 8,
+                "type": "string"
+              }
+            },
+            "required": [
+              "authorization"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "b4fa000cfb298dd8769c383e27faddf195e2f0abe9e1e8d421f08a699cc6c7a1"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "UserLookupHeaders",
+          "normalizedSchema": {
+            "$id": "UserLookupHeaders.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "authorization": {
+                "maxLength": 8199,
+                "minLength": 8,
+                "type": "string"
+              }
+            },
+            "required": [
+              "authorization"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "1ea584be69c68d29213c382fda050c519df9f3662b3a437ff26e3413340193cd"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "UserLookupHeaders",
+        "generatedJsonSchema": "UserLookupHeaders",
+        "typespec": "CanonicalCloud.Rpc.Version.UserLookupHeaders"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/UserLookupHeaders"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/UserLookupHeaders"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 27
+        }
+      }
+    },
+    {
+      "assertionDigest": "d2c0d03b1db2ba4a62bc179015423a9ac6a3fdcb9ddb903b830e8768da8fdb44",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.VersionError",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "VersionError",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "e233f5bf4618182ce5b62edb08b9be1fa5624e5004cb05579c868af71ec1677e"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "VersionError",
+          "normalizedSchema": {
+            "$id": "VersionError.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "2418f7434f808bbe6ed1d6f4e9838c73b30dd0ad7366fa542636d6accaca0cc5"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "VersionError",
+        "generatedJsonSchema": "VersionError",
+        "typespec": "CanonicalCloud.Rpc.Version.VersionError"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/VersionError"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/VersionError"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 20
+        }
+      }
+    },
+    {
+      "assertionDigest": "6274bf3529bb0a2b7e5642b11af6201e9dbe1dba673f422091b960c7754de055",
+      "assertionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "service",
+              "version"
+            ],
+            "type": "object"
+          },
+          "traceIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "result",
+          "traceIds"
+        ],
+        "type": "object"
+      },
+      "id": "CanonicalCloud.Rpc.Version.VersionResponse",
+      "kind": "model",
+      "lanes": {
+        "authoredJsonSchema": {
+          "kind": "model",
+          "name": "VersionResponse",
+          "normalizedSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "result": {
+                "properties": {
+                  "service": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "service",
+                  "version"
+                ],
+                "type": "object",
+                "unevaluatedProperties": false
+              },
+              "traceIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "result",
+              "traceIds"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "independently-authored-authority",
+          "schemaDigest": "1d9e2d39829a36071fb7077e84cdef55221c421886f24bf00995a5d7529294c3"
+        },
+        "typespecGeneratedJsonSchema": {
+          "kind": "model",
+          "name": "VersionResponse",
+          "normalizedSchema": {
+            "$id": "VersionResponse.json",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "result": {
+                "properties": {
+                  "service": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "service",
+                  "version"
+                ],
+                "type": "object",
+                "unevaluatedProperties": false
+              },
+              "traceIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "result",
+              "traceIds"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "role": "comparison-evidence-only",
+          "schemaDigest": "d979d9bdd4a448b0b4bdc353dd1bcb9b3f119e67f0622546984d2323b9a37c33"
+        }
+      },
+      "names": {
+        "authoredJsonSchema": "VersionResponse",
+        "generatedJsonSchema": "VersionResponse",
+        "typespec": "CanonicalCloud.Rpc.Version.VersionResponse"
+      },
+      "sources": {
+        "authoredJsonSchema": {
+          "file": "authored.schema.json",
+          "pointer": "#/$defs/VersionResponse"
+        },
+        "generatedJsonSchema": {
+          "file": "typespec.generated.schema.json",
+          "pointer": "#/$defs/VersionResponse"
+        },
+        "typespec": {
+          "column": 1,
+          "file": "main.tsp",
+          "line": 10
+        }
+      }
+    }
+  ],
+  "differential": {
+    "agreements": 387,
+    "behaviorallyIndistinguishableDeclarations": 8,
+    "comparedDeclarations": 8,
+    "corpusInstances": 0,
+    "divergences": 0,
+    "formatAssertion": false,
+    "maxProbesPerDeclarationPerLane": 128,
+    "probesEvaluated": 387,
+    "refusals": 0
+  },
+  "editableAuthority": false,
+  "excludedDeclarations": [],
+  "irId": "55796fb37abc3194679edf57497d7db2facd3fe9ec9dd8af1fc963bd01c5fb0d",
+  "outOfScopeDeclarations": [],
+  "provenance": {
+    "authoredJsonSchema": {
+      "digest": "5793c470fe554a77a3c0489c92ddd73e0607812200a4ada6e6e1082ef258bb9d",
+      "files": [
+        {
+          "path": "authored.schema.json",
+          "sha256": "bc33ef53609d519230ef9f0b8d502898ae027a32d26eef8918dab31b46e6b852"
+        }
+      ],
+      "role": "independently-authored-authority"
+    },
+    "generatedJsonSchema": {
+      "digest": "31f9f434c6fe389150c8d2d64845d38fcfab9480ab07e65280da1f625dd30f58",
+      "files": [
+        {
+          "path": "typespec.generated.schema.json",
+          "sha256": "b2f6b38866ef8d28cbd8a6f2342e8886e425383a8378f4728ec5d6deb419268d"
+        }
+      ],
+      "role": "comparison-evidence-only"
+    },
+    "typespec": {
+      "digest": "b46b62547329eb47b02041642a8331398ab202bcb76f22c6f861ac4b394e7852",
+      "files": [
+        {
+          "path": "main.tsp",
+          "sha256": "c44c2fd27b6b09f364d33e02348b029ce448918d9dde5e19b39cfd15f2b66569"
+        }
+      ],
+      "role": "independently-authored-authority"
+    }
+  },
+  "role": "downstream-derived-parity-artifact",
+  "schema": "ores.typespec-json-schema-validator.contract-ir/v1",
+  "status": "passed",
+  "toolchain": {
+    "jsonSchemaEmitter": "@typespec/json-schema",
+    "typespecCompiler": {
+      "available": true,
+      "command": "/home/runner/work/_actions/ORESoftware/typespec-json-schema-validator/bd503465dab8c5148fee722b443ed04ff126c9bf/node_modules/@typespec/compiler/cmd/tsp.js",
+      "version": "1.16.0"
+    },
+    "validator": {
+      "name": "@oresoftware/typespec-json-schema-validator",
+      "version": "0.1.0"
+    }
+  }
+}
