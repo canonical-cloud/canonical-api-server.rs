@@ -1,0 +1,85 @@
+name: Version RPC product contract parity
+
+on:
+  pull_request:
+    paths:
+      - "contracts/rpc/version/**"
+      - "src/rpc_routes/version/handlers.rs"
+      - "generated/rpc/server-operation-index.json"
+      - ".typespec-json-schema-validator/contract-ir.json"
+      - ".typespec-json-schema-validator/report.json"
+      - ".github/workflows/rpc-version-contract-parity.yml"
+  push:
+    branches: [main, dev]
+    paths:
+      - "contracts/rpc/version/**"
+      - "src/rpc_routes/version/handlers.rs"
+      - "generated/rpc/server-operation-index.json"
+      - ".typespec-json-schema-validator/contract-ir.json"
+      - ".typespec-json-schema-validator/report.json"
+      - ".github/workflows/rpc-version-contract-parity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out revision
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Generate peer-authority receipt and Contract IR
+        uses: ORESoftware/typespec-json-schema-validator@5b04b08512f8a03a376dcb96818969e2d83c2d84
+        with:
+          typespec: contracts/rpc/version/main.tsp
+          schema: contracts/rpc/version/authored.schema.json
+          report: .typespec-json-schema-validator/report.json
+          contract_ir: .typespec-json-schema-validator/contract-ir.json
+          output_dir: .typespec-json-schema-validator/generated
+          max_probes: "128"
+
+      - name: Require admitted version payload declarations
+        uses: ORESoftware/typespec-json-schema-validator/actions/test-consumer-admission@5b04b08512f8a03a376dcb96818969e2d83c2d84
+        with:
+          contract_ir: .typespec-json-schema-validator/contract-ir.json
+          report: .typespec-json-schema-validator/report.json
+          typespec: contracts/rpc/version/main.tsp
+          schema: contracts/rpc/version/authored.schema.json
+          generated_schema: .typespec-json-schema-validator/generated/typespec.generated.schema.json
+          expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError"]'
+
+      - name: Require committed current evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch .typespec-json-schema-validator/report.json
+          git ls-files --error-unmatch .typespec-json-schema-validator/contract-ir.json
+          test -s .typespec-json-schema-validator/report.json
+          test -s .typespec-json-schema-validator/contract-ir.json
+          git diff --exit-code -- \
+            .typespec-json-schema-validator/report.json \
+            .typespec-json-schema-validator/contract-ir.json
+
+      - name: Retain diagnostic receipt and IR
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: version-rpc-contract-${{ github.event.repository.name }}-${{ github.run_id }}
+          path: .typespec-json-schema-validator/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
