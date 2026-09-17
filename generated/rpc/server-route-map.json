@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "service": "canonical-api-server",
+  "map": {
+    "canonical_cloud.version.get_version": {
+      "path": "/v1/version",
+      "methods": [
+        "GET"
+      ],
+      "rpc_key": "canonical_cloud.version.get_version",
+      "transports": [
+        "http"
+      ]
+    }
+  }
+}
