@@ -13,7 +13,7 @@ use ores_api_docs::{
 use ores_api_docs_operation_macros::ores_route;
 
 use super::handlers::{
-    self, FindUserByIdOperation, FindUserByIdRequest, FindUsersOperation, UserLookupHeaders,
+    self, FindUserByIdOperation, FindUserByIdRequest, FindUsersOperation, FindUsersRequest, UserLookupHeaders,
 };
 
 pub(super) fn router() -> Router<AppState> {
@@ -36,12 +36,13 @@ fn request_headers(headers: &HeaderMap) -> UserLookupHeaders {
 pub async fn post_find_users(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Json(body): Json<FindUsersRequest>,
 ) -> Response {
     let request = OperationRequestData::new(RpcPayloadCodec::Json);
     request.insert_path::<FindUsersOperation>(NoSection);
     request.insert_query::<FindUsersOperation>(NoSection);
     request.insert_headers::<FindUsersOperation>(request_headers(&headers));
-    request.insert_body::<FindUsersOperation>(NoSection);
+    request.insert_body::<FindUsersOperation>(body);
     request.set_semantic_input(serde_json::json!({
         "source": "http",
         "operation": FindUsersOperation::KEY,
