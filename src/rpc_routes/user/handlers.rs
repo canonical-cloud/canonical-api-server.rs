@@ -10,6 +10,12 @@ pub(crate) struct UserLookupHeaders {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct FindUsersRequest {
+    pub query: String,
+    pub limit: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FindUserByIdRequest {
     pub user_id: String,
 }
@@ -74,7 +80,7 @@ impl OperationSpec for FindUsersOperation {
     type Path = NoSection;
     type Query = NoSection;
     type RequestHeaders = UserLookupHeaders;
-    type RequestBody = NoSection;
+    type RequestBody = FindUsersRequest;
     type ResponseBody = FindUsersResponse;
     type ResponseHeaders = NoSection;
     type ResponseTrailers = NoSection;
@@ -99,19 +105,47 @@ pub(crate) async fn find_users(
     let headers = ctx
         .headers()
         .map_err(|error| rpc_error("headers_missing", error.to_string()))?;
+    let body = ctx
+        .body()
+        .map_err(|error| rpc_error("body_missing", error.to_string()))?;
     let token = bearer_token(&headers.authorization)?;
+    let query = body.query.trim().to_ascii_lowercase();
+    if query.is_empty() || query.len() > 256 {
+        return Err(rpc_error(
+            "invalid_query",
+            "query must contain 1..=256 characters",
+        ));
+    }
+    if !(1..=100).contains(&body.limit) {
+        return Err(rpc_error("invalid_limit", "limit must be between 1 and 100"));
+    }
+
     let raw = directory_client()?
         .scim_list_users(token)
         .await
-        .map_err(|error| rpc_error("user_lookup_failed", error.to_string()))?;
+        .map_err(|_| rpc_error("user_lookup_failed", "user directory lookup failed"))?;
     let resources = raw
         .get("Resources")
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| rpc_error("directory_response_invalid", "SCIM list response must contain Resources"))?;
-    let results = resources
-        .iter()
-        .map(|value| user_summary(value, None))
-        .collect::<Result<Vec<_>, _>>()?;
+        .ok_or_else(|| rpc_error("directory_response_invalid", "user directory response is invalid"))?;
+    let mut results = Vec::new();
+    for value in resources {
+        let summary = user_summary(value, None)?;
+        let matches = [
+            Some(summary.id.as_str()),
+            summary.user_name.as_deref(),
+            summary.display_name.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|candidate| candidate.to_ascii_lowercase().contains(&query));
+        if matches {
+            results.push(summary);
+            if results.len() >= usize::from(body.limit) {
+                break;
+            }
+        }
+    }
     Ok(FindUsersResponse::new(
         results,
         "ores-trace-canonical-users-handler-f3Qm7vN2rKs",
@@ -164,7 +198,7 @@ pub(crate) async fn find_user_by_id(
     let raw = directory_client()?
         .scim_get_user(token, user_id)
         .await
-        .map_err(|error| rpc_error("user_lookup_failed", error.to_string()))?;
+        .map_err(|_| rpc_error("user_lookup_failed", "user directory lookup failed"))?;
     Ok(FindUserByIdResponse::new(
         user_summary(&raw, Some(user_id))?,
         "ores-trace-canonical-user-handler-b7Qm3vN5rKs",
