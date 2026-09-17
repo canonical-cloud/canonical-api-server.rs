@@ -32,6 +32,17 @@ model UserLookupHeaders {
 
 @jsonSchema
 @extension("unevaluatedProperties", false)
+model FindUsersRequest {
+  @minLength(1)
+  @maxLength(256)
+  query: string;
+  @minValue(1)
+  @maxValue(100)
+  limit: integer;
+}
+
+@jsonSchema
+@extension("unevaluatedProperties", false)
 model FindUsersResponse {
   results: {
     id: string;
