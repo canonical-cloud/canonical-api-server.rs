@@ -24,7 +24,7 @@ model VersionError {
 
 @jsonSchema
 @extension("unevaluatedProperties", false)
-model GetUserByIdHeaders {
+model UserLookupHeaders {
   @minLength(8)
   @maxLength(8199)
   authorization: string;
@@ -32,7 +32,19 @@ model GetUserByIdHeaders {
 
 @jsonSchema
 @extension("unevaluatedProperties", false)
-model GetUserByIdRequest {
+model FindUsersResponse {
+  results: {
+    id: string;
+    user_name?: string;
+    display_name?: string;
+    active?: boolean;
+  }[];
+  traceIds: string[];
+}
+
+@jsonSchema
+@extension("unevaluatedProperties", false)
+model FindUserByIdRequest {
   @minLength(1)
   @maxLength(256)
   user_id: string;
@@ -40,7 +52,7 @@ model GetUserByIdRequest {
 
 @jsonSchema
 @extension("unevaluatedProperties", false)
-model GetUserByIdResponse {
+model FindUserByIdResponse {
   result: {
     id: string;
     user_name?: string;
@@ -52,7 +64,7 @@ model GetUserByIdResponse {
 
 @jsonSchema
 @extension("unevaluatedProperties", false)
-model GetUserByIdError {
+model UserLookupError {
   code: string;
   message: string;
 }
