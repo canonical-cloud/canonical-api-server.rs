@@ -36,17 +36,13 @@ model GetUserByIdRequest {
 
 @jsonSchema
 @extension("unevaluatedProperties", false)
-model UserSummary {
-  id: string;
-  user_name?: string;
-  display_name?: string;
-  active?: boolean;
-}
-
-@jsonSchema
-@extension("unevaluatedProperties", false)
 model GetUserByIdResponse {
-  result: UserSummary;
+  result: {
+    id: string;
+    user_name?: string;
+    display_name?: string;
+    active?: boolean;
+  };
   traceIds: string[];
 }
 
