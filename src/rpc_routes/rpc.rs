@@ -29,7 +29,7 @@ impl RpcV1Dispatcher for Dispatcher {
                 "canonical_cloud.version.get_version" => {
                     version::rpc::dispatch!(state, context, call)
                 }
-                "canonical_cloud.user.get_user_by_id" => {
+                "canonical_cloud.user.find_users" | "canonical_cloud.user.find_user_by_id" => {
                     user::rpc::dispatch!(state, context, call)
                 }
                 _ => unreachable!("rpc_v1_router rejects unknown operation keys before dispatch"),
@@ -55,10 +55,17 @@ fn route_map() -> RouteMap {
               "authorization":{"mode":"public"},
               "transports":["http"]
             },
-            "user_get_by_id":{
-              "path":"/v1/get-user-by-id",
+            "user_find_users":{
+              "path":"/v1/find-users",
               "methods":["POST"],
-              "rpc_key":"canonical_cloud.user.get_user_by_id",
+              "rpc_key":"canonical_cloud.user.find_users",
+              "authorization":{"mode":"authenticated"},
+              "transports":["http"]
+            },
+            "user_find_by_id":{
+              "path":"/v1/find-user-by-id",
+              "methods":["POST"],
+              "rpc_key":"canonical_cloud.user.find_user_by_id",
               "authorization":{"mode":"authenticated"},
               "transports":["http"]
             }
