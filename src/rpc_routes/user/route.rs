@@ -7,7 +7,8 @@ use axum::{
 };
 use canonical_api_server::AppState;
 use ores_api_docs::{
-    NoSection, OperationContext, OperationRequestData, RpcPayloadCodec, TypedOperationContext,
+    NoSection, OperationContext, OperationRequestData, OperationSpec, RpcPayloadCodec,
+    TypedOperationContext,
 };
 use ores_api_docs_operation_macros::ores_route;
 
