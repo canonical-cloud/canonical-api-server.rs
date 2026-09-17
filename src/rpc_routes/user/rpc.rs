@@ -7,16 +7,28 @@ macro_rules! dispatch {
     ($state:expr, $context:expr, $call:expr) => {{
         let __ores_call = $call;
         match __ores_call.key.as_str() {
-            "canonical_cloud.user.get_user_by_id" => ::ores_api_docs::rpc_shared_operation::dispatch_typed_json_operation::<
+            "canonical_cloud.user.find_users" => ::ores_api_docs::rpc_shared_operation::dispatch_typed_json_operation::<
                 _,
-                handlers::GetUserByIdOperation,
+                handlers::FindUsersOperation,
                 _,
                 _,
             >(
                 $state,
                 $context,
                 __ores_call,
-                handlers::__ores_invoke_get_user_by_id,
+                handlers::__ores_invoke_find_users,
+            )
+            .await,
+            "canonical_cloud.user.find_user_by_id" => ::ores_api_docs::rpc_shared_operation::dispatch_typed_json_operation::<
+                _,
+                handlers::FindUserByIdOperation,
+                _,
+                _,
+            >(
+                $state,
+                $context,
+                __ores_call,
+                handlers::__ores_invoke_find_user_by_id,
             )
             .await,
             _ => unreachable!("generated route-local RPC dispatcher received an unknown key"),
