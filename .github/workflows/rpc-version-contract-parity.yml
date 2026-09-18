@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
       - "contracts/rpc/version/**"
       - "src/rpc_routes/version/handlers.rs"
       - "src/rpc_routes/user/handlers.rs"
@@ -15,6 +16,7 @@ on:
     branches: [main, dev]
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
       - "contracts/rpc/version/**"
       - "src/rpc_routes/version/handlers.rs"
       - "src/rpc_routes/user/handlers.rs"
@@ -33,22 +35,24 @@ concurrency:
 
 jobs:
   parity:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out exact head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify checked-out revision
+      - name: Verify exact clean source head
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
 
       - name: Generate peer-authority receipt and Contract IR
         uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
@@ -74,6 +78,56 @@ jobs:
         shell: bash
         run: git diff --exit-code -- contracts/rpc/version/
 
+      - name: Install Rust for lock regeneration
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+
+      - name: Regenerate Cargo.lock with scoped Canonical library read access
+        shell: bash
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: |
+          set -euo pipefail
+          if [[ -z "${CANONICAL_LIB_READ_TOKEN:-}" ]]; then
+            echo "::error::CANONICAL_LIB_READ_TOKEN is required for the pinned private canonical-lib-core source" >&2
+            exit 1
+          fi
+
+          askpass="$RUNNER_TEMP/canonical-lib-read-askpass.sh"
+          global_config="$RUNNER_TEMP/empty.gitconfig"
+          cleanup() {
+            rm -f "$askpass" "$global_config"
+          }
+          trap cleanup EXIT
+          umask 077
+          : >"$global_config"
+          cat >"$askpass" <<'EOF'
+          #!/usr/bin/env bash
+          case "${1:-}" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "${CANONICAL_LIB_READ_TOKEN:?}" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 0700 "$askpass"
+          export GIT_ASKPASS="$askpass"
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_CONFIG_GLOBAL="$global_config"
+          export GIT_CONFIG_NOSYSTEM=1
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home"
+          mkdir -p "$CARGO_HOME"
+          cargo generate-lockfile
+
+          grep -Fq 'name = "canonical-lib"' Cargo.lock
+          grep -Fq 'name = "ores-api-docs"' Cargo.lock
+          grep -Fq 'name = "ores-api-docs-operation-macros"' Cargo.lock
+          if grep -Eiq 'x-access-token|CANONICAL_LIB_READ_TOKEN|https://[^/[:space:]]+@github\.com' Cargo.lock; then
+            echo "::error::Cargo.lock contains credential-bearing source data" >&2
+            exit 1
+          fi
+
       - name: Require committed current evidence
         shell: bash
         run: |
@@ -85,6 +139,12 @@ jobs:
           git diff --exit-code -- \
             .typespec-json-schema-validator/report.json \
             .typespec-json-schema-validator/contract-ir.json
+
+      - name: Require Cargo.lock to be current
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- Cargo.lock
 
       - name: Retain diagnostic receipt and IR
         if: ${{ always() }}

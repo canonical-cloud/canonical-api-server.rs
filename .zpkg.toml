@@ -33,7 +33,7 @@ tag_format = "v{version}"
 exclude = [".env", ".env.*", ".direnv/**", ".vendor/.zed/**", ".zed/**", ".zed-pack/**", "target/**", "tmp/**", "**/*.log", ".DS_Store"]
 
 [install]
-adapter = "none"
+adapter = "rust"
 dir = ".vendor/.zed"
 
 [scripts]
