@@ -18,7 +18,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 fn shutdown_grace() -> Duration {
-    const DEFAULT_MS: u64 = 30_000;
+    const DEFAULT_MS: u64 = 5_000;
     let milliseconds = canonical_api_server::flags::var("SHUTDOWN_GRACE_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
