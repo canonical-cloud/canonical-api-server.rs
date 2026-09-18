@@ -47,8 +47,19 @@ EOF
   test -f .zed/cargo-paths.toml
   test -L zed_modules/canonical-cloud/canonical-lib-core
   test "$(readlink -f zed_modules/canonical-cloud/canonical-lib-core)" = "$(readlink -f workspace/canonical-lib-core)"
-  grep -q 'canonical-lib' .zed/cargo-paths.toml
-  grep -q 'zed_modules/canonical-cloud/canonical-lib-core' .zed/cargo-paths.toml
+  grep -Fq '[patch."https://github.com/canonical-cloud/canonical-lib-core"]' .zed/cargo-paths.toml
+  grep -Fq '"canonical-lib" = { path = "zed_modules/canonical-cloud/canonical-lib-core" }' .zed/cargo-paths.toml
+  if grep -A20 '^\[patch\.crates-io\]
+    echo "Zed Cargo adapter leaked credential-bearing source data" >&2
+    exit 1
+  fi
+)
+
+echo "zed private Rust dependency projection passed for ${expected_sha}"
+ .zed/cargo-paths.toml | grep -Fq '"canonical-lib"'; then
+    echo "Zed incorrectly patched canonical-lib through crates.io instead of its declared Git source" >&2
+    exit 1
+  fi
 
   if grep -Eiq 'x-access-token|CANONICAL_LIB_READ_TOKEN|github\.com/.+@' .zed/cargo-paths.toml; then
     echo "Zed Cargo adapter leaked credential-bearing source data" >&2
