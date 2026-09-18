@@ -36,22 +36,30 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Configure approved Canonical library read access
+      - name: Regenerate Cargo.lock with scoped Canonical library read access
         shell: bash
         env:
           CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: |
           set -euo pipefail
           if [[ -z "${CANONICAL_LIB_READ_TOKEN:-}" ]]; then
             echo "::error::CANONICAL_LIB_READ_TOKEN is required for the pinned private canonical-lib-core source" >&2
             exit 1
           fi
-          git config --global url."https://x-access-token:${CANONICAL_LIB_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
-
-      - name: Regenerate Cargo.lock from Cargo.toml
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-        run: cargo generate-lockfile
+          credential_config="$RUNNER_TEMP/canonical-lib-read.gitconfig"
+          cleanup() {
+            rm -f "$credential_config"
+          }
+          trap cleanup EXIT
+          umask 077
+          cat >"$credential_config" <<EOF
+          [url "https://x-access-token:${CANONICAL_LIB_READ_TOKEN}@github.com/"]
+              insteadOf = https://github.com/
+          EOF
+          export GIT_CONFIG_GLOBAL="$credential_config"
+          export GIT_CONFIG_NOSYSTEM=1
+          cargo generate-lockfile
 
       - name: Generate admitted Contract IR and parity receipt
         uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
