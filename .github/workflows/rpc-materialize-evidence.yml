@@ -19,27 +19,28 @@ permissions:
 
 concurrency:
   group: rpc-materialize-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   materialize:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out exact branch head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify checked-out revision
+      - name: Verify exact clean source head
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -57,25 +58,38 @@ jobs:
             echo "::error::CANONICAL_LIB_READ_TOKEN is required for the pinned private canonical-lib-core source" >&2
             exit 1
           fi
+
           askpass="$RUNNER_TEMP/canonical-lib-read-askpass.sh"
+          global_config="$RUNNER_TEMP/empty.gitconfig"
           cleanup() {
-            rm -f "$askpass"
+            rm -f "$askpass" "$global_config"
           }
           trap cleanup EXIT
           umask 077
+          : >"$global_config"
           cat >"$askpass" <<'EOF'
           #!/usr/bin/env bash
-          case "$1" in
+          case "${1:-}" in
             *Username*) printf '%s\n' 'x-access-token' ;;
             *Password*) printf '%s\n' "${CANONICAL_LIB_READ_TOKEN:?}" ;;
             *) exit 1 ;;
           esac
           EOF
           chmod 0700 "$askpass"
+
           export GIT_ASKPASS="$askpass"
           export GIT_TERMINAL_PROMPT=0
+          export GIT_CONFIG_GLOBAL="$global_config"
           export GIT_CONFIG_NOSYSTEM=1
           cargo generate-lockfile
+
+          grep -Fq 'name = "canonical-lib"' Cargo.lock
+          grep -Fq 'name = "ores-api-docs"' Cargo.lock
+          grep -Fq 'name = "ores-api-docs-operation-macros"' Cargo.lock
+          if grep -Eiq 'x-access-token|CANONICAL_LIB_READ_TOKEN|https://[^/[:space:]]+@github\.com' Cargo.lock; then
+            echo "::error::Cargo.lock contains credential-bearing source data" >&2
+            exit 1
+          fi
 
       - name: Generate admitted Contract IR and parity receipt
         uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
@@ -97,83 +111,42 @@ jobs:
           generated_schema: .typespec-json-schema-validator/generated/typespec.generated.schema.json
           expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError","CanonicalCloud.Rpc.Version.UserLookupHeaders","CanonicalCloud.Rpc.Version.FindUsersRequest","CanonicalCloud.Rpc.Version.FindUsersResponse","CanonicalCloud.Rpc.Version.FindUserByIdRequest","CanonicalCloud.Rpc.Version.FindUserByIdResponse","CanonicalCloud.Rpc.Version.UserLookupError"]'
 
-      - name: Verify authored authorities were not modified
-        shell: bash
-        run: git diff --exit-code -- contracts/rpc/version/
-
-      - name: Verify only reproducibility evidence changed
+      - name: Verify source authorities stayed immutable
         shell: bash
         run: |
           set -euo pipefail
-          unexpected_tracked="$(git diff --name-only | grep -Ev '^(Cargo\.lock|\.typespec-json-schema-validator/(report|contract-ir)\.json)
+          git diff --exit-code -- contracts/rpc/version/ src/
+
+      - name: Verify generated change allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowed='^(Cargo\.lock|\.typespec-json-schema-validator/(report|contract-ir)\.json)$'
+          unexpected="$(git diff --name-only --no-ext-diff | grep -Ev "$allowed" || true)"
           if [[ -n "$unexpected" ]]; then
-            echo "::error::unexpected generated paths would be materialized"
-            printf '%s\n' "$unexpected"
+            echo "::error::generator modified tracked paths outside the reproducibility bundle" >&2
+            printf '%s\n' "$unexpected" >&2
             exit 1
           fi
 
-          git ls-files --error-unmatch Cargo.lock
           test -s Cargo.lock
           test -s .typespec-json-schema-validator/report.json
           test -s .typespec-json-schema-validator/contract-ir.json
 
-      - name: Upload exact-head reproducibility bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rpc-reproducibility-${{ github.sha }}
-          path: |
-            Cargo.lock
-            .typespec-json-schema-validator/report.json
-            .typespec-json-schema-validator/contract-ir.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
- || true)"
-          if [[ -n "$unexpected_tracked" ]]; then
-            echo "::error::generator modified tracked paths outside the reproducibility bundle"
-            printf '%s\n' "$unexpected_tracked"
-            exit 1
-          fi
-
-          git add -f \
-            Cargo.lock \
-            .typespec-json-schema-validator/report.json \
-            .typespec-json-schema-validator/contract-ir.json
-
-          unexpected="$(git diff --cached --name-only | grep -Ev '^(Cargo\.lock|\.typespec-json-schema-validator/(report|contract-ir)\.json)
-          if [[ -n "$unexpected" ]]; then
-            echo "::error::unexpected generated paths would be materialized"
-            printf '%s\n' "$unexpected"
-            exit 1
-          fi
-
-          git ls-files --error-unmatch Cargo.lock
-          test -s Cargo.lock
-          test -s .typespec-json-schema-validator/report.json
-          test -s .typespec-json-schema-validator/contract-ir.json
-
-      - name: Upload exact-head reproducibility bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rpc-reproducibility-${{ github.sha }}
-          path: |
-            Cargo.lock
-            .typespec-json-schema-validator/report.json
-            .typespec-json-schema-validator/contract-ir.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
- || true)"
-          if [[ -n "$unexpected" ]]; then
-            echo "::error::unexpected generated paths would be materialized"
-            printf '%s\n' "$unexpected"
-            exit 1
-          fi
-
-          git ls-files --error-unmatch Cargo.lock
-          test -s Cargo.lock
-          test -s .typespec-json-schema-validator/report.json
-          test -s .typespec-json-schema-validator/contract-ir.json
+          node - <<'NODE'
+          const fs = require('fs');
+          const report = JSON.parse(fs.readFileSync('.typespec-json-schema-validator/report.json', 'utf8'));
+          const ir = JSON.parse(fs.readFileSync('.typespec-json-schema-validator/contract-ir.json', 'utf8'));
+          if (report.status !== 'passed' || report.zeroUnexplainedFindings !== true) {
+            throw new Error('TJSV report is not an admitted zero-finding pass');
+          }
+          if (ir.status !== 'passed') {
+            throw new Error('Contract IR is not admitted');
+          }
+          if (!report.runId || !ir.irId) {
+            throw new Error('TJSV evidence is missing runId/irId identity');
+          }
+          NODE
 
       - name: Upload exact-head reproducibility bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
