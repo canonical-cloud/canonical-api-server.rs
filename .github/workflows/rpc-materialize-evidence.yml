@@ -36,6 +36,18 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Configure approved Canonical library read access
+        shell: bash
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CANONICAL_LIB_READ_TOKEN:-}" ]]; then
+            echo "::error::CANONICAL_LIB_READ_TOKEN is required for the pinned private canonical-lib-core source" >&2
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${CANONICAL_LIB_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+
       - name: Regenerate Cargo.lock from Cargo.toml
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
