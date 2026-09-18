@@ -79,15 +79,17 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Configure approved cross-repo GitHub dependency access
+      - name: Configure approved Canonical library read access
         shell: bash
         env:
-          SYNC_FLEET_TOKEN: ${{ secrets.SYNC_FLEET_TOKEN }}
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -n "${SYNC_FLEET_TOKEN:-}" ]]; then
-            git config --global url."https://x-access-token:${SYNC_FLEET_TOKEN}@github.com/".insteadOf "https://github.com/"
+          if [[ -z "${CANONICAL_LIB_READ_TOKEN:-}" ]]; then
+            echo "::error::CANONICAL_LIB_READ_TOKEN is required for the pinned private canonical-lib-core source" >&2
+            exit 1
           fi
+          git config --global url."https://x-access-token:${CANONICAL_LIB_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Regenerate Cargo.lock from Cargo.toml
         env:
