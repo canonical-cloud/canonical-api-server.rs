@@ -1,0 +1,31 @@
+name: refresh next-loggers lock evidence
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/refresh-next-loggers-lock.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lock-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Generate the lockfile delta with Cargo
+        run: |
+          set -euo pipefail
+          cargo update -p oresoftware-next-loggers
+          echo '--- CARGO_LOCK_DIFF_BEGIN ---'
+          git diff -- Cargo.lock
+          echo '--- CARGO_LOCK_DIFF_END ---'
+          cargo check --locked
