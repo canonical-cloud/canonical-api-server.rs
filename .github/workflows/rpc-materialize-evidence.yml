@@ -29,7 +29,7 @@ jobs:
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -63,6 +63,8 @@ jobs:
 
       - name: Commit only reproducibility evidence
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git add Cargo.lock .typespec-json-schema-validator/report.json .typespec-json-schema-validator/contract-ir.json
@@ -73,4 +75,4 @@ jobs:
           git config user.name "ores-stack-rpc-bot"
           git config user.email "ores-stack-rpc-bot@users.noreply.github.com"
           git commit -m "chore(rpc): materialize lock and contract evidence [skip ci]"
-          git push origin HEAD:DEN-4078-shared-operation-rpc
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:DEN-4078-shared-operation-rpc

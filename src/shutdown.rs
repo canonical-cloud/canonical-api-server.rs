@@ -6,15 +6,11 @@ use std::{
 
 use axum::Router;
 use axum_server::Handle;
+use next_loggers::{
+    HttpShutdownController, ShutdownDecision, ShutdownPhase, ShutdownTrigger,
+    DEFAULT_HTTP_GRACE_PERIOD,
+};
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle, time::sleep};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
-    Running,
-    Draining,
-    Forcing,
-    Stopped,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
@@ -29,33 +25,14 @@ impl Event {
     const fn is_signal(self) -> bool {
         matches!(self, Self::SigInt | Self::SigTerm)
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Action {
-    None,
-    StartGraceful,
-    Force,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct State {
-    phase: Phase,
-    tty: bool,
-    trigger: Option<Event>,
-    /// Counts operating-system SIGINT/SIGTERM events only.
-    signal_count: u32,
-    forced_by: Option<Event>,
-}
-
-impl State {
-    const fn new(tty: bool) -> Self {
-        Self {
-            phase: Phase::Running,
-            tty,
-            trigger: None,
-            signal_count: 0,
-            forced_by: None,
+    const fn shared_trigger(self) -> Option<ShutdownTrigger> {
+        match self {
+            Self::SigInt => Some(ShutdownTrigger::SigInt),
+            Self::SigTerm => Some(ShutdownTrigger::SigTerm),
+            Self::Eof => Some(ShutdownTrigger::StdinEof),
+            Self::Deadline => Some(ShutdownTrigger::Deadline),
+            Self::DrainFailed => None,
         }
     }
 }
@@ -70,7 +47,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            grace: Duration::from_secs(30),
+            grace: DEFAULT_HTTP_GRACE_PERIOD,
             tty: std::io::stdin().is_terminal(),
             watch_stdin_eof: true,
         }
@@ -81,55 +58,6 @@ impl Default for Config {
 pub enum Outcome {
     Graceful,
     Forced(Event),
-}
-
-const fn reduce(state: State, event: Event) -> (State, Action) {
-    match state.phase {
-        Phase::Stopped | Phase::Forcing => (state, Action::None),
-        Phase::Running => {
-            if matches!(event, Event::Eof) {
-                // Ctrl-D is armed only after the first interactive SIGINT.
-                // Before that point stdin belongs to the application.
-                return (state, Action::None);
-            }
-
-            if event.is_signal() {
-                let mut next = state;
-                next.phase = Phase::Draining;
-                next.trigger = Some(event);
-                next.signal_count = next.signal_count.saturating_add(1);
-                (next, Action::StartGraceful)
-            } else if matches!(event, Event::DrainFailed) {
-                let mut next = state;
-                next.phase = Phase::Forcing;
-                next.trigger = Some(event);
-                next.forced_by = Some(event);
-                (next, Action::Force)
-            } else {
-                (state, Action::None)
-            }
-        }
-        Phase::Draining => {
-            let force = matches!(
-                event,
-                Event::Deadline | Event::DrainFailed | Event::SigInt | Event::SigTerm
-            ) || (matches!(event, Event::Eof)
-                && state.tty
-                && matches!(state.trigger, Some(Event::SigInt)));
-
-            if !force {
-                return (state, Action::None);
-            }
-
-            let mut next = state;
-            next.phase = Phase::Forcing;
-            next.forced_by = Some(event);
-            if event.is_signal() {
-                next.signal_count = next.signal_count.saturating_add(1);
-            }
-            (next, Action::Force)
-        }
-    }
 }
 
 fn event_channel() -> (mpsc::UnboundedSender<Event>, mpsc::UnboundedReceiver<Event>) {
@@ -240,7 +168,10 @@ async fn serve_with_events(
 
     let started_at = Instant::now();
     let handle: Handle<SocketAddr> = Handle::new();
-    let mut state = State::new(config.tty);
+    let lifecycle = HttpShutdownController::new(config.grace);
+    let mut trigger: Option<Event> = None;
+    let mut forced_by: Option<Event> = None;
+    let mut signal_count = 0_u32;
     let mut deadline_task: Option<JoinHandle<()>> = None;
     let mut eof_watcher_armed = false;
     let mut events_open = true;
@@ -260,19 +191,24 @@ async fn serve_with_events(
 
                 match result {
                     Ok(()) => {
-                        state.phase = Phase::Stopped;
-                        let outcome = match state.forced_by {
+                        if lifecycle.phase() == ShutdownPhase::Draining {
+                            let _ = lifecycle.handle_trigger(
+                                ShutdownTrigger::GracefulComplete,
+                                false,
+                            );
+                        }
+                        let outcome = match forced_by {
                             Some(event) => Outcome::Forced(event),
                             None => Outcome::Graceful,
                         };
                         tracing::info!(
                             event = "server.shutdown.complete",
                             outcome = ?outcome,
-                            phase = ?state.phase,
-                            trigger = ?state.trigger,
-                            forced_by = ?state.forced_by,
-                            tty = state.tty,
-                            signal_count = state.signal_count,
+                            phase = ?lifecycle.phase(),
+                            trigger = ?trigger,
+                            forced_by = ?forced_by,
+                            tty = config.tty,
+                            signal_count,
                             grace_ms = millis(config.grace),
                             active_connections = handle.connection_count() as u64,
                             elapsed_ms = millis(started_at.elapsed()),
@@ -281,19 +217,16 @@ async fn serve_with_events(
                         return Ok(outcome);
                     }
                     Err(error) => {
-                        let (next, action) = reduce(state, Event::DrainFailed);
-                        state = next;
-                        if matches!(action, Action::Force) {
-                            handle.shutdown();
-                        }
+                        lifecycle.gate().stop_accepting();
+                        forced_by.get_or_insert(Event::DrainFailed);
                         tracing::error!(
                             event = "server.shutdown.complete",
                             outcome = "serve-failed",
-                            phase = ?state.phase,
-                            trigger = ?state.trigger,
-                            forced_by = ?state.forced_by,
-                            tty = state.tty,
-                            signal_count = state.signal_count,
+                            phase = ?lifecycle.phase(),
+                            trigger = ?trigger,
+                            forced_by = ?forced_by,
+                            tty = config.tty,
+                            signal_count,
                             grace_ms = millis(config.grace),
                             active_connections = handle.connection_count() as u64,
                             elapsed_ms = millis(started_at.elapsed()),
@@ -308,34 +241,62 @@ async fn serve_with_events(
                 let event = match event {
                     Some(event) => event,
                     None => {
-                        // Losing every lifecycle input must fail closed rather
-                        // than leaving a server that can no longer be stopped.
                         events_open = false;
                         Event::DrainFailed
                     }
                 };
 
-                let (next, action) = reduce(state, event);
-                state = next;
+                if event.is_signal() {
+                    signal_count = signal_count.saturating_add(1);
+                }
                 let active_connections = handle.connection_count() as u64;
 
-                match action {
-                    Action::None => {}
-                    Action::StartGraceful => {
+                if event == Event::DrainFailed {
+                    lifecycle.gate().stop_accepting();
+                    forced_by = Some(event);
+                    if let Some(task) = deadline_task.take() {
+                        task.abort();
+                    }
+                    tracing::warn!(
+                        event = "server.shutdown",
+                        input = ?event,
+                        phase = ?lifecycle.phase(),
+                        trigger = ?trigger,
+                        forced_by = ?forced_by,
+                        tty = config.tty,
+                        signal_count,
+                        grace_ms = millis(config.grace),
+                        active_connections,
+                        elapsed_ms = millis(started_at.elapsed()),
+                        "forcing shutdown because the lifecycle event channel failed",
+                    );
+                    handle.shutdown();
+                    continue;
+                }
+
+                let Some(shared_trigger) = event.shared_trigger() else {
+                    continue;
+                };
+                let signal_outcome = lifecycle.handle_trigger(shared_trigger, config.tty);
+
+                match signal_outcome.decision {
+                    ShutdownDecision::Ignore => {}
+                    ShutdownDecision::Drain => {
+                        trigger.get_or_insert(event);
                         tracing::info!(
                             event = "server.shutdown",
                             input = ?event,
-                            phase = ?state.phase,
-                            trigger = ?state.trigger,
-                            tty = state.tty,
-                            signal_count = state.signal_count,
+                            phase = ?lifecycle.phase(),
+                            trigger = ?trigger,
+                            tty = config.tty,
+                            signal_count,
                             grace_ms = millis(config.grace),
                             active_connections,
                             elapsed_ms = millis(started_at.elapsed()),
                             "shutdown requested; listener is closing and active work is draining",
                         );
 
-                        if state.tty && matches!(event, Event::SigInt) {
+                        if let Some(warning) = signal_outcome.terminal_warning.as_deref() {
                             if config.watch_stdin_eof && !eof_watcher_armed {
                                 eof_watcher_armed = true;
                                 spawn_stdin_eof_watcher(events_tx.clone());
@@ -343,15 +304,14 @@ async fn serve_with_events(
                             tracing::info!(
                                 event = "server.shutdown",
                                 input = ?event,
-                                phase = ?state.phase,
-                                tty = true,
-                                signal_count = state.signal_count,
-                                "interactive drain active; press Ctrl-C again or Ctrl-D to force close",
+                                phase = ?lifecycle.phase(),
+                                tty = config.tty,
+                                signal_count,
+                                warning,
+                                "interactive drain active",
                             );
                         }
 
-                        // The reducer owns the deadline so a timeout is logged
-                        // as forced rather than silently reported as graceful.
                         handle.graceful_shutdown(None);
                         let deadline_tx = events_tx.clone();
                         let grace = config.grace;
@@ -360,18 +320,19 @@ async fn serve_with_events(
                             let _ = deadline_tx.send(Event::Deadline);
                         }));
                     }
-                    Action::Force => {
+                    ShutdownDecision::Force => {
+                        forced_by = Some(event);
                         if let Some(task) = deadline_task.take() {
                             task.abort();
                         }
                         tracing::warn!(
                             event = "server.shutdown",
                             input = ?event,
-                            phase = ?state.phase,
-                            trigger = ?state.trigger,
-                            forced_by = ?state.forced_by,
-                            tty = state.tty,
-                            signal_count = state.signal_count,
+                            phase = ?lifecycle.phase(),
+                            trigger = ?trigger,
+                            forced_by = ?forced_by,
+                            tty = config.tty,
+                            signal_count,
                             grace_ms = millis(config.grace),
                             active_connections,
                             elapsed_ms = millis(started_at.elapsed()),
@@ -379,6 +340,7 @@ async fn serve_with_events(
                         );
                         handle.shutdown();
                     }
+                    ShutdownDecision::Complete => {}
                 }
             }
         }
@@ -394,71 +356,84 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
         sync::{mpsc, Notify},
-        time::timeout,
+        time::{sleep, timeout},
     };
 
     use super::*;
 
     #[test]
-    fn tty_second_sigint_forces() {
-        let (state, action) = reduce(State::new(true), Event::SigInt);
-        assert_eq!(action, Action::StartGraceful);
-        assert_eq!(state.signal_count, 1);
-
-        let (state, action) = reduce(state, Event::SigInt);
-        assert_eq!(action, Action::Force);
-        assert_eq!(state.phase, Phase::Forcing);
-        assert_eq!(state.signal_count, 2);
+    fn tty_second_sigint_waits_for_ctrl_d() {
+        let lifecycle = HttpShutdownController::default();
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::SigInt, true)
+                .decision,
+            ShutdownDecision::Drain
+        );
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::SigInt, true)
+                .decision,
+            ShutdownDecision::Ignore
+        );
+        assert_eq!(lifecycle.phase(), ShutdownPhase::Draining);
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::StdinEof, true)
+                .decision,
+            ShutdownDecision::Force
+        );
     }
 
     #[test]
-    fn sigterm_counts_as_an_operating_system_signal() {
-        let (state, action) = reduce(State::new(false), Event::SigTerm);
-        assert_eq!(action, Action::StartGraceful);
-        assert_eq!(state.signal_count, 1);
-
-        let (state, action) = reduce(state, Event::SigTerm);
-        assert_eq!(action, Action::Force);
-        assert_eq!(state.signal_count, 2);
+    fn second_sigterm_forces() {
+        let lifecycle = HttpShutdownController::default();
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::SigTerm, false)
+                .decision,
+            ShutdownDecision::Drain
+        );
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::SigTerm, false)
+                .decision,
+            ShutdownDecision::Force
+        );
     }
 
     #[test]
-    fn tty_eof_only_forces_after_first_sigint_without_counting_a_signal() {
-        let initial = State::new(true);
-        assert_eq!(reduce(initial, Event::Eof), (initial, Action::None));
-
-        let (state, _) = reduce(initial, Event::SigInt);
-        let (state, action) = reduce(state, Event::Eof);
-        assert_eq!(action, Action::Force);
-        assert_eq!(state.forced_by, Some(Event::Eof));
-        assert_eq!(state.signal_count, 1);
-    }
-
-    #[test]
-    fn tty_eof_after_sigterm_is_ignored() {
-        let (state, _) = reduce(State::new(true), Event::SigTerm);
-        assert_eq!(state.signal_count, 1);
-        assert_eq!(reduce(state, Event::Eof), (state, Action::None));
+    fn tty_eof_forces_any_active_drain() {
+        let lifecycle = HttpShutdownController::default();
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::SigTerm, true)
+                .decision,
+            ShutdownDecision::Drain
+        );
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::StdinEof, true)
+                .decision,
+            ShutdownDecision::Force
+        );
     }
 
     #[test]
     fn non_tty_eof_is_ignored_and_one_sigterm_drains() {
-        let initial = State::new(false);
-        assert_eq!(reduce(initial, Event::Eof), (initial, Action::None));
-        let (state, action) = reduce(initial, Event::SigTerm);
-        assert_eq!(action, Action::StartGraceful);
-        assert_eq!(state.phase, Phase::Draining);
-        assert_eq!(state.signal_count, 1);
-    }
-
-    #[test]
-    fn deadline_and_drain_failure_do_not_increment_signal_count() {
-        for event in [Event::Deadline, Event::DrainFailed] {
-            let (state, _) = reduce(State::new(false), Event::SigTerm);
-            let (forced, action) = reduce(state, event);
-            assert_eq!(action, Action::Force);
-            assert_eq!(forced.signal_count, 1);
-        }
+        let lifecycle = HttpShutdownController::default();
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::StdinEof, false)
+                .decision,
+            ShutdownDecision::Ignore
+        );
+        assert_eq!(
+            lifecycle
+                .handle_trigger(ShutdownTrigger::SigTerm, false)
+                .decision,
+            ShutdownDecision::Drain
+        );
     }
 
     async fn never_finishes(AxumState(entered): AxumState<Arc<Notify>>) -> &'static str {
@@ -510,20 +485,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn second_tty_sigint_force_closes_active_connection() {
+    async fn repeated_tty_sigint_waits_until_ctrl_d() {
         let (address, entered, events, task) = active_server(Duration::from_secs(2)).await;
         let mut stream = open_slow_request(address, entered).await;
 
         events.send(Event::SigInt).unwrap();
         tokio::task::yield_now().await;
         events.send(Event::SigInt).unwrap();
+        sleep(Duration::from_millis(25)).await;
+        assert!(!task.is_finished(), "second interactive SIGINT forced the server");
 
+        events.send(Event::Eof).unwrap();
         let outcome = timeout(Duration::from_secs(1), task)
             .await
-            .expect("server did not force close")
+            .expect("server did not force close after EOF")
             .unwrap()
             .unwrap();
-        assert_eq!(outcome, Outcome::Forced(Event::SigInt));
+        assert_eq!(outcome, Outcome::Forced(Event::Eof));
 
         let mut byte = [0_u8; 1];
         let read = timeout(Duration::from_secs(1), stream.read(&mut byte))
