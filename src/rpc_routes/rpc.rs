@@ -27,9 +27,15 @@ impl RpcV1Dispatcher for Dispatcher {
         Box::pin(async move {
             match call.key.as_str() {
                 "canonical_cloud.version.get_version" => {
+                    // `dispatch!` expands here, not in version::rpc. Bind the
+                    // sibling handlers module at the expansion site so the
+                    // generated macro stays module-layout agnostic.
+                    use super::version::handlers;
                     version::rpc::dispatch!(state, context, call)
                 }
                 "canonical_cloud.user.find_users" | "canonical_cloud.user.find_user_by_id" => {
+                    // Same macro-hygiene rule for the shared user authority.
+                    use super::user::handlers;
                     user::rpc::dispatch!(state, context, call)
                 }
                 _ => unreachable!("rpc_v1_router rejects unknown operation keys before dispatch"),
