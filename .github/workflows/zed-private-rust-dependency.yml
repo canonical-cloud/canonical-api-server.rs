@@ -85,7 +85,5 @@ jobs:
           echo "$bin_dir" >> "$GITHUB_PATH"
 
       - name: Certify workspace-backed Rust projection
-        env:
-          ZED_PKG_GITHUB_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
         shell: bash
         run: bash scripts/verify-zed-private-rust-dependency.sh
