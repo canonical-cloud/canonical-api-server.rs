@@ -91,14 +91,16 @@ jobs:
             exit 1
           fi
           askpass="$RUNNER_TEMP/canonical-lib-read-askpass.sh"
+          global_config="$RUNNER_TEMP/empty.gitconfig"
           cleanup() {
-            rm -f "$askpass"
+            rm -f "$askpass" "$global_config"
           }
           trap cleanup EXIT
           umask 077
+          : >"$global_config"
           cat >"$askpass" <<'EOF'
           #!/usr/bin/env bash
-          case "$1" in
+          case "${1:-}" in
             *Username*) printf '%s\n' 'x-access-token' ;;
             *Password*) printf '%s\n' "${CANONICAL_LIB_READ_TOKEN:?}" ;;
             *) exit 1 ;;
@@ -107,7 +109,10 @@ jobs:
           chmod 0700 "$askpass"
           export GIT_ASKPASS="$askpass"
           export GIT_TERMINAL_PROMPT=0
+          export GIT_CONFIG_GLOBAL="$global_config"
           export GIT_CONFIG_NOSYSTEM=1
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home"
+          mkdir -p "$CARGO_HOME"
           cargo generate-lockfile
 
 
