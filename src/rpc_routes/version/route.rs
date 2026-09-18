@@ -1,9 +1,9 @@
 use axum::{
-    Json, Router,
     extract::State,
-    http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
+    http::{header::CACHE_CONTROL, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::get as axum_get,
+    Json, Router,
 };
 use canonical_api_server::AppState;
 use ores_api_docs::{
@@ -14,8 +14,8 @@ use ores_api_docs_operation_macros::ores_route;
 
 use super::handlers::{self, VersionOperation};
 
-pub(super) fn router() -> Router<AppState> {
-    Router::new().route("/v1/version", get(get))
+pub(crate) fn router() -> Router<AppState> {
+    Router::new().route("/v1/version", axum_get(get))
 }
 
 #[ores_route(operation = handlers::get_version)]
