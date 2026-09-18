@@ -3,12 +3,14 @@ name: RPC source materialization
 on:
   push:
     branches:
-      - DEN-4078-shared-operation-rpc
+      - DEN-4078-materialize-rpc-evidence
     paths:
       - Cargo.toml
       - Cargo.lock
       - "contracts/rpc/version/**"
       - "src/**"
+      - ".typespec-json-schema-validator/report.json"
+      - ".typespec-json-schema-validator/contract-ir.json"
       - ".github/workflows/rpc-materialize-evidence.yml"
   workflow_dispatch:
 
@@ -27,9 +29,17 @@ jobs:
       - name: Check out exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify checked-out revision
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -81,16 +91,39 @@ jobs:
           generated_schema: .typespec-json-schema-validator/generated/typespec.generated.schema.json
           expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError","CanonicalCloud.Rpc.Version.UserLookupHeaders","CanonicalCloud.Rpc.Version.FindUsersResponse","CanonicalCloud.Rpc.Version.FindUserByIdRequest","CanonicalCloud.Rpc.Version.FindUserByIdResponse","CanonicalCloud.Rpc.Version.UserLookupError"]'
 
+      - name: Verify authored authorities were not modified
+        shell: bash
+        run: git diff --exit-code -- contracts/rpc/version/
+
       - name: Commit only reproducibility evidence
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git add Cargo.lock .typespec-json-schema-validator/report.json .typespec-json-schema-validator/contract-ir.json
+          git add -f \
+            Cargo.lock \
+            .typespec-json-schema-validator/report.json \
+            .typespec-json-schema-validator/contract-ir.json
+
+          unexpected="$(git diff --cached --name-only | grep -Ev '^(Cargo\.lock|\.typespec-json-schema-validator/(report|contract-ir)\.json)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::refusing to commit unexpected reproducibility paths"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+
+          git ls-files --error-unmatch Cargo.lock
+          test -s Cargo.lock
+          test -s .typespec-json-schema-validator/report.json
+          test -s .typespec-json-schema-validator/contract-ir.json
+
           if git diff --cached --quiet; then
             echo "RPC source evidence already current"
             exit 0
           fi
+
           git config user.name "ores-stack-rpc-bot"
           git config user.email "ores-stack-rpc-bot@users.noreply.github.com"
-          git commit -m "chore(rpc): materialize lock and contract evidence [skip ci]"
-          git push origin HEAD:DEN-4078-shared-operation-rpc
+          git commit -m "chore(rpc): materialize lock and contract evidence"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
