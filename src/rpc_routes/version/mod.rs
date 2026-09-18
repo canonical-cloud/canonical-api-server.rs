@@ -1,10 +1,10 @@
 use axum::Router;
 use canonical_api_server::AppState;
 
-pub(super) mod handlers;
-pub(super) mod rpc;
-mod route;
+pub(crate) mod handlers;
+pub(crate) mod route;
+pub(crate) mod rpc;
 
-pub(super) fn router() -> Router<AppState> {
+pub(crate) fn router() -> Router<AppState> {
     route::router()
 }
