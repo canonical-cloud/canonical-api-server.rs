@@ -45,8 +45,10 @@ EOF
   zed install
 
   test -f .zed/cargo-paths.toml
+  test -L zed_modules/canonical-cloud/canonical-lib-core
+  test "$(readlink -f zed_modules/canonical-cloud/canonical-lib-core)" = "$(readlink -f workspace/canonical-lib-core)"
   grep -q 'canonical-lib' .zed/cargo-paths.toml
-  grep -q 'workspace/canonical-lib-core' .zed/cargo-paths.toml
+  grep -q 'zed_modules/canonical-cloud/canonical-lib-core' .zed/cargo-paths.toml
 
   if grep -Eiq 'x-access-token|CANONICAL_LIB_READ_TOKEN|github\.com/.+@' .zed/cargo-paths.toml; then
     echo "Zed Cargo adapter leaked credential-bearing source data" >&2
