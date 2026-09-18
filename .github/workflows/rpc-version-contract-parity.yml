@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
       - "contracts/rpc/version/**"
       - "src/rpc_routes/version/handlers.rs"
       - "src/rpc_routes/user/handlers.rs"
@@ -15,6 +16,7 @@ on:
     branches: [main, dev]
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
       - "contracts/rpc/version/**"
       - "src/rpc_routes/version/handlers.rs"
       - "src/rpc_routes/user/handlers.rs"
@@ -33,22 +35,24 @@ concurrency:
 
 jobs:
   parity:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out exact head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify checked-out revision
+      - name: Verify exact clean source head
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
 
       - name: Generate peer-authority receipt and Contract IR
         uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
@@ -90,6 +94,7 @@ jobs:
             echo "::error::CANONICAL_LIB_READ_TOKEN is required for the pinned private canonical-lib-core source" >&2
             exit 1
           fi
+
           askpass="$RUNNER_TEMP/canonical-lib-read-askpass.sh"
           global_config="$RUNNER_TEMP/empty.gitconfig"
           cleanup() {
@@ -115,6 +120,13 @@ jobs:
           mkdir -p "$CARGO_HOME"
           cargo generate-lockfile
 
+          grep -Fq 'name = "canonical-lib"' Cargo.lock
+          grep -Fq 'name = "ores-api-docs"' Cargo.lock
+          grep -Fq 'name = "ores-api-docs-operation-macros"' Cargo.lock
+          if grep -Eiq 'x-access-token|CANONICAL_LIB_READ_TOKEN|https://[^/[:space:]]+@github\.com' Cargo.lock; then
+            echo "::error::Cargo.lock contains credential-bearing source data" >&2
+            exit 1
+          fi
 
       - name: Require committed current evidence
         shell: bash
