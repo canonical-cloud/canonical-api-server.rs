@@ -4,6 +4,8 @@ use ores_api_docs_operation_macros::ores_operation;
 use serde::{Deserialize, Serialize};
 use shared_auth_client::SharedAuthClient;
 
+use crate::telemetry::log_rpc_error;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct UserLookupHeaders {
     pub authorization: String,
@@ -102,35 +104,87 @@ impl OperationSpec for FindUsersOperation {
 pub(crate) async fn find_users(
     ctx: TypedOperationContext<AppState, FindUsersOperation>,
 ) -> Result<FindUsersResponse, UserLookupError> {
-    let headers = ctx
-        .headers()
-        .map_err(|error| rpc_error("headers_missing", error.to_string()))?;
-    let body = ctx
-        .body()
-        .map_err(|error| rpc_error("body_missing", error.to_string()))?;
-    let token = bearer_token(&headers.authorization)?;
+    const ROUTINE_ID: &str = "ores-routine-5a5Cstkakla3OHMjMPKva";
+
+    let headers = ctx.headers().map_err(|error| {
+        log_rpc_error(
+            FindUsersOperation::KEY,
+            "headers_missing",
+            "ores-trace-tzj7oJNQM2avNZhKJXVcK",
+            ROUTINE_ID,
+        );
+        rpc_error("headers_missing", error.to_string())
+    })?;
+    let body = ctx.body().map_err(|error| {
+        log_rpc_error(
+            FindUsersOperation::KEY,
+            "body_missing",
+            "ores-trace-BNIOcMqTnLKaHIulhw3sU",
+            ROUTINE_ID,
+        );
+        rpc_error("body_missing", error.to_string())
+    })?;
+    let token = bearer_token(&headers.authorization).inspect_err(|error| {
+        log_rpc_error(
+            FindUsersOperation::KEY,
+            &error.code,
+            "ores-trace-QRF9Bg2esRK-VVeJCNBPh",
+            ROUTINE_ID,
+        );
+    })?;
     let query = body.query.trim().to_ascii_lowercase();
     if query.is_empty() || query.len() > 256 {
+        log_rpc_error(
+            FindUsersOperation::KEY,
+            "invalid_query",
+            "ores-trace-V_i5iRASStxbqjIlWv6Ay",
+            ROUTINE_ID,
+        );
         return Err(rpc_error(
             "invalid_query",
             "query must contain 1..=256 characters",
         ));
     }
     if !(1..=100).contains(&body.limit) {
-        return Err(rpc_error(
+        log_rpc_error(
+            FindUsersOperation::KEY,
             "invalid_limit",
-            "limit must be between 1 and 100",
-        ));
+            "ores-trace-P1JOzMmivi4GiQ8oOijNs",
+            ROUTINE_ID,
+        );
+        return Err(rpc_error("invalid_limit", "limit must be between 1 and 100"));
     }
 
-    let raw = directory_client()?
+    let raw = directory_client()
+        .inspect_err(|error| {
+            log_rpc_error(
+                FindUsersOperation::KEY,
+                &error.code,
+                "ores-trace-4sshHDTpvQNXckEtU3uAg",
+                ROUTINE_ID,
+            );
+        })?
         .scim_list_users(token)
         .await
-        .map_err(|_| rpc_error("user_lookup_failed", "user directory lookup failed"))?;
+        .map_err(|_| {
+            log_rpc_error(
+                FindUsersOperation::KEY,
+                "user_lookup_failed",
+                "ores-trace-O1puWJbp3phvd76AxfuPi",
+                ROUTINE_ID,
+            );
+            rpc_error("user_lookup_failed", "user directory lookup failed")
+        })?;
     let resources = raw
         .get("Resources")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
+            log_rpc_error(
+                FindUsersOperation::KEY,
+                "directory_response_invalid",
+                "ores-trace-plBJhDgBC5ULeZvR9XxWR",
+                ROUTINE_ID,
+            );
             rpc_error(
                 "directory_response_invalid",
                 "user directory response is invalid",
@@ -138,7 +192,14 @@ pub(crate) async fn find_users(
         })?;
     let mut results = Vec::new();
     for value in resources {
-        let summary = user_summary(value, None)?;
+        let summary = user_summary(value, None).inspect_err(|error| {
+            log_rpc_error(
+                FindUsersOperation::KEY,
+                &error.code,
+                "ores-trace--93w7g_d7_t5aYxhNoY0N",
+                ROUTINE_ID,
+            );
+        })?;
         let matches = [
             Some(summary.id.as_str()),
             summary.user_name.as_deref(),
@@ -188,38 +249,85 @@ impl OperationSpec for FindUserByIdOperation {
 pub(crate) async fn find_user_by_id(
     ctx: TypedOperationContext<AppState, FindUserByIdOperation>,
 ) -> Result<FindUserByIdResponse, UserLookupError> {
-    let headers = ctx
-        .headers()
-        .map_err(|error| rpc_error("headers_missing", error.to_string()))?;
-    let body = ctx
-        .body()
-        .map_err(|error| rpc_error("body_missing", error.to_string()))?;
-    let token = bearer_token(&headers.authorization)?;
+    const ROUTINE_ID: &str = "ores-routine-HJz9D11JRx0hVSzwUFLOr";
+
+    let headers = ctx.headers().map_err(|error| {
+        log_rpc_error(
+            FindUserByIdOperation::KEY,
+            "headers_missing",
+            "ores-trace-XN3gidMD78zRwqHAS4itB",
+            ROUTINE_ID,
+        );
+        rpc_error("headers_missing", error.to_string())
+    })?;
+    let body = ctx.body().map_err(|error| {
+        log_rpc_error(
+            FindUserByIdOperation::KEY,
+            "body_missing",
+            "ores-trace-B9q2NtXlcrnBdkfaEkYLY",
+            ROUTINE_ID,
+        );
+        rpc_error("body_missing", error.to_string())
+    })?;
+    let token = bearer_token(&headers.authorization).inspect_err(|error| {
+        log_rpc_error(
+            FindUserByIdOperation::KEY,
+            &error.code,
+            "ores-trace-AHaK7juQYPcAYILHfjraJ",
+            ROUTINE_ID,
+        );
+    })?;
     let user_id = body.user_id.trim();
     if user_id.is_empty() || user_id.len() > 256 {
+        log_rpc_error(
+            FindUserByIdOperation::KEY,
+            "invalid_user_id",
+            "ores-trace-X0Il7xHrNBFGTJkyjeUpi",
+            ROUTINE_ID,
+        );
         return Err(rpc_error(
             "invalid_user_id",
             "user_id must contain 1..=256 characters",
         ));
     }
 
-    let raw = directory_client()?
+    let raw = directory_client()
+        .inspect_err(|error| {
+            log_rpc_error(
+                FindUserByIdOperation::KEY,
+                &error.code,
+                "ores-trace-vfwF7NYajm1zwkp6qdFo4",
+                ROUTINE_ID,
+            );
+        })?
         .scim_get_user(token, user_id)
         .await
-        .map_err(|_| rpc_error("user_lookup_failed", "user directory lookup failed"))?;
+        .map_err(|_| {
+            log_rpc_error(
+                FindUserByIdOperation::KEY,
+                "user_lookup_failed",
+                "ores-trace-axC5IDkLj9e8XpUFoT6nN",
+                ROUTINE_ID,
+            );
+            rpc_error("user_lookup_failed", "user directory lookup failed")
+        })?;
+    let summary = user_summary(&raw, Some(user_id)).inspect_err(|error| {
+        log_rpc_error(
+            FindUserByIdOperation::KEY,
+            &error.code,
+            "ores-trace-7WyadH5kJXJJ-K0ewD090",
+            ROUTINE_ID,
+        );
+    })?;
     Ok(FindUserByIdResponse::new(
-        user_summary(&raw, Some(user_id))?,
+        summary,
         "ores-trace-canonical-user-handler-b7Qm3vN5rKs",
     ))
 }
 
 fn directory_client() -> Result<SharedAuthClient, UserLookupError> {
-    let base = std::env::var("SHARED_AUTH_BASE").map_err(|_| {
-        rpc_error(
-            "directory_not_configured",
-            "SHARED_AUTH_BASE is not configured",
-        )
-    })?;
+    let base = std::env::var("SHARED_AUTH_BASE")
+        .map_err(|_| rpc_error("directory_not_configured", "SHARED_AUTH_BASE is not configured"))?;
     SharedAuthClient::try_new(base)
         .map_err(|error| rpc_error("directory_not_configured", error.to_string()))
 }
