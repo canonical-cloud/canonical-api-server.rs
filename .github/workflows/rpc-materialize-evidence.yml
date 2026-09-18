@@ -132,4 +132,22 @@ jobs:
           git config user.name "ores-stack-rpc-bot"
           git config user.email "ores-stack-rpc-bot@users.noreply.github.com"
           git commit -m "chore(rpc): materialize lock and contract evidence"
-          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
+
+          push_askpass="$RUNNER_TEMP/rpc-materialize-push-askpass.sh"
+          cleanup_push() {
+            rm -f "$push_askpass"
+          }
+          trap cleanup_push EXIT
+          umask 077
+          cat >"$push_askpass" <<'EOF'
+          #!/usr/bin/env bash
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN:?}" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 0700 "$push_askpass"
+          export GIT_ASKPASS="$push_askpass"
+          export GIT_TERMINAL_PROMPT=0
+          git push origin "HEAD:${GITHUB_REF_NAME}"
