@@ -3,7 +3,7 @@
 //! The bridge installs one subscriber and never attaches credentials, URLs,
 //! request bodies, identity values, or upstream response bodies.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use next_loggers::{
     json, JsonObject, LogLevel, LogRecord, Logger, LoggerError, Options, Transport,
@@ -13,8 +13,34 @@ use tracing_subscriber::EnvFilter;
 const SERVICE_NAME: &str = "canonical-api-server";
 const SERVICE_NAMESPACE: &str = "canonical-cloud";
 
+/// The one application logger, shared by every emitter in the process.
+///
+/// RPC error logging runs on an error path that can be hot, and building a
+/// Logger there would allocate a fresh transport per failed call. The logger is
+/// built once during init and borrowed thereafter.
+static ORES_LOGGER: OnceLock<Logger> = OnceLock::new();
+
+/// Build the application logger. Called once via ORES_LOGGER.
+fn build_logger() -> Logger {
+    Logger::new(Options {
+        app_name: SERVICE_NAME.to_string(),
+        name: Some("server".to_string()),
+        console: false,
+        transports: vec![Arc::new(TracingBridgeTransport)],
+        ..Options::default()
+    })
+}
+
+/// The shared application logger.
+///
+/// Falls back to building one if telemetry was never initialized, so a unit
+/// test or an early failure still logs instead of panicking on an error path.
+fn ores_logger() -> &'static Logger {
+    ORES_LOGGER.get_or_init(build_logger)
+}
+
 pub struct TelemetryGuard {
-    ores_logger: Logger,
+    ores_logger: &'static Logger,
 }
 
 impl Drop for TelemetryGuard {
@@ -37,13 +63,7 @@ pub fn init() -> TelemetryGuard {
         .with_target(true)
         .init();
 
-    let ores_logger = Logger::new(Options {
-        app_name: SERVICE_NAME.to_string(),
-        name: Some("server".to_string()),
-        console: false,
-        transports: vec![Arc::new(TracingBridgeTransport)],
-        ..Options::default()
-    });
+    let ores_logger = ores_logger();
     let _ = ores_logger
         .info(vec![json!("telemetry initialized")])
         .add_fields(JsonObject::from_iter([
@@ -86,14 +106,7 @@ pub(crate) fn log_rpc_error(
     routine_id: &'static str,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let logger = Logger::new(Options {
-            app_name: SERVICE_NAME.to_string(),
-            name: Some("server".to_string()),
-            console: false,
-            transports: vec![Arc::new(TracingBridgeTransport)],
-            ..Options::default()
-        });
-        let _ = logger
+        let _ = ores_logger()
             .error(vec![json!("rpc operation failed")])
             .add_fields(JsonObject::from_iter([
                 ("service.name".to_string(), json!(SERVICE_NAME)),
