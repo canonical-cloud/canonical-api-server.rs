@@ -62,17 +62,27 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Install pinned Zed package manager
+      - name: Install checksum-pinned Zed v0.3.0
         shell: bash
+        env:
+          ZED_VERSION: v0.3.0
+          ZED_SHA256: e380240c96242ab3b29e0e9d14c95ba946d086f20f0732e34d0e5cf47513efc7
         run: |
           set -euo pipefail
-          cargo install \
-            --git https://github.com/zed-pkg/zed-cli \
-            --rev 96eb02864c627193be42ce4765f8b5324dc99d56 \
-            --locked \
-            --bin zed \
-            --root "$RUNNER_TEMP/zed-cli"
-          echo "$RUNNER_TEMP/zed-cli/bin" >> "$GITHUB_PATH"
+          archive="$RUNNER_TEMP/zed.tar.gz"
+          unpack="$RUNNER_TEMP/zed-unpack"
+          bin_dir="$RUNNER_TEMP/zed-cli/bin"
+          curl --fail --silent --show-error --location \
+            "https://github.com/zed-pkg/zed-cli/releases/download/${ZED_VERSION}/zed-x86_64-unknown-linux-musl.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$ZED_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$unpack" "$bin_dir"
+          tar -xzf "$archive" -C "$unpack"
+          zed_bin="$(find "$unpack" -type f -name zed -print -quit)"
+          test -n "$zed_bin"
+          install -m 0755 "$zed_bin" "$bin_dir/zed"
+          "$bin_dir/zed" --version
+          echo "$bin_dir" >> "$GITHUB_PATH"
 
       - name: Certify workspace-backed Rust projection
         env:
