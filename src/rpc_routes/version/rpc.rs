@@ -2,24 +2,24 @@
 // Source authority: sibling handlers.rs. route.rs is only an optional HTTP projection.
 // Regenerate with `ores-stack sync`; validate with `ores-stack sync --check`.
 
+use super::handlers;
+
 macro_rules! dispatch {
     ($state:expr, $context:expr, $call:expr) => {{
         let __ores_call = $call;
         match __ores_call.key.as_str() {
-            "canonical_cloud.version.get_version" => {
-                ::ores_api_docs::rpc_shared_operation::dispatch_typed_json_operation::<
-                    _,
-                    $crate::rpc_routes::version::handlers::VersionOperation,
-                    _,
-                    _,
-                >(
-                    $state,
-                    $context,
-                    __ores_call,
-                    $crate::rpc_routes::version::handlers::__ores_invoke_get_version,
-                )
-                .await
-            }
+            "canonical_cloud.version.get_version" => ::ores_api_docs::rpc_shared_operation::dispatch_typed_json_operation::<
+                _,
+                handlers::VersionOperation,
+                _,
+                _,
+            >(
+                $state,
+                $context,
+                __ores_call,
+                handlers::__ores_invoke_get_version,
+            )
+            .await,
             _ => unreachable!("generated route-local RPC dispatcher received an unknown key"),
         }
     }};
