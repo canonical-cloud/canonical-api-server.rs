@@ -1,0 +1,227 @@
+{
+  "authorities": {
+    "jsonSchema": {
+      "authority": "independently-authored",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "onUnexplainedMismatch": "STOPPED_FOR_EVALUATION",
+    "precedence": "none",
+    "typespec": {
+      "authority": "independently-authored",
+      "generatedJsonSchemaRole": "comparison-evidence-only"
+    }
+  },
+  "configuration": {
+    "bundleId": "typespec.generated.schema.json",
+    "differential": {
+      "enabled": true,
+      "formatAssertion": false,
+      "instanceCorpus": null,
+      "maxProbesPerDeclarationPerLane": 128
+    },
+    "emitter": "@typespec/json-schema",
+    "emitterOptions": {
+      "bundleId": "typespec.generated.schema.json",
+      "emitAllModels": "true",
+      "emitAllRefs": "true",
+      "emitter-output-dir": "/home/runner/work/canonical-api-server.rs/canonical-api-server.rs/.rpc-cross-evidence/canonical-admin/generated",
+      "file-type": "json",
+      "int64-strategy": "string",
+      "polymorphic-models-strategy": "oneOf",
+      "seal-object-schemas": "true"
+    },
+    "executionMode": "pinned-compiler-fallback",
+    "mappingSchema": "ores.typespec-json-schema-validator.mapping/v1",
+    "maxFindings": 250,
+    "mode": "check"
+  },
+  "counts": {
+    "authoredDeclarations": 6,
+    "differentialFindings": 0,
+    "emittedFindings": 0,
+    "findings": 0,
+    "findingsTruncated": false,
+    "generatedDeclarations": 6,
+    "structuralFindings": 0,
+    "typespecDeclarations": 6,
+    "typespecOutOfScopeDeclarations": 0
+  },
+  "coverage": {
+    "comparedDimensions": [
+      "top-level declaration names",
+      "declaration kind families",
+      "required and optional properties",
+      "nullability",
+      "scalar types and formats",
+      "numeric and string constraints",
+      "enums",
+      "unions and composition",
+      "references",
+      "defaults and annotations",
+      "additional and unevaluated property policy",
+      "instance-level verdict agreement over a synthesized probe corpus"
+    ],
+    "differentialInstanceValidation": true,
+    "directDeclarationInventory": true,
+    "outOfScopeTypeSpecDeclarations": [],
+    "sourceMutationCheck": true,
+    "typespecGeneratedJsonSchemaComparison": true
+  },
+  "declarationMap": [
+    {
+      "authored": "FindUsersError",
+      "generated": "FindUsersError",
+      "kind": "model",
+      "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersError"
+    },
+    {
+      "authored": "FindUsersHeaders",
+      "generated": "FindUsersHeaders",
+      "kind": "model",
+      "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersHeaders"
+    },
+    {
+      "authored": "FindUsersRequest",
+      "generated": "FindUsersRequest",
+      "kind": "model",
+      "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersRequest"
+    },
+    {
+      "authored": "FindUsersResponse",
+      "generated": "FindUsersResponse",
+      "kind": "model",
+      "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersResponse"
+    },
+    {
+      "authored": "VersionError",
+      "generated": "VersionError",
+      "kind": "model",
+      "typespec": "CanonicalCloud.Admin.Rpc.Version.VersionError"
+    },
+    {
+      "authored": "VersionResponse",
+      "generated": "VersionResponse",
+      "kind": "model",
+      "typespec": "CanonicalCloud.Admin.Rpc.Version.VersionResponse"
+    }
+  ],
+  "differential": {
+    "declarations": [
+      {
+        "authored": "FindUsersError",
+        "behaviorallyIndistinguishable": true,
+        "divergences": 0,
+        "generated": "FindUsersError",
+        "probes": 31,
+        "refusals": 0,
+        "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersError"
+      },
+      {
+        "authored": "FindUsersHeaders",
+        "behaviorallyIndistinguishable": true,
+        "divergences": 0,
+        "generated": "FindUsersHeaders",
+        "probes": 20,
+        "refusals": 0,
+        "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersHeaders"
+      },
+      {
+        "authored": "FindUsersRequest",
+        "behaviorallyIndistinguishable": true,
+        "divergences": 0,
+        "generated": "FindUsersRequest",
+        "probes": 31,
+        "refusals": 0,
+        "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersRequest"
+      },
+      {
+        "authored": "FindUsersResponse",
+        "behaviorallyIndistinguishable": true,
+        "divergences": 0,
+        "generated": "FindUsersResponse",
+        "probes": 86,
+        "refusals": 0,
+        "typespec": "CanonicalCloud.Admin.Rpc.Version.FindUsersResponse"
+      },
+      {
+        "authored": "VersionError",
+        "behaviorallyIndistinguishable": true,
+        "divergences": 0,
+        "generated": "VersionError",
+        "probes": 31,
+        "refusals": 0,
+        "typespec": "CanonicalCloud.Admin.Rpc.Version.VersionError"
+      },
+      {
+        "authored": "VersionResponse",
+        "behaviorallyIndistinguishable": true,
+        "divergences": 0,
+        "generated": "VersionResponse",
+        "probes": 63,
+        "refusals": 0,
+        "typespec": "CanonicalCloud.Admin.Rpc.Version.VersionResponse"
+      }
+    ],
+    "summary": {
+      "agreements": 262,
+      "behaviorallyIndistinguishableDeclarations": 6,
+      "comparedDeclarations": 6,
+      "corpusInstances": 0,
+      "divergences": 0,
+      "formatAssertion": false,
+      "maxProbesPerDeclarationPerLane": 128,
+      "probesEvaluated": 262,
+      "refusals": 0
+    }
+  },
+  "findings": [],
+  "inputs": {
+    "authoredJsonSchema": {
+      "digest": "4bec9b0652df167b99a0e21ab7fbd84d7b23d466c69dad0e30e188af6abacc30",
+      "files": [
+        {
+          "relativePath": "authored.schema.json",
+          "sha256": "63ac440ae4a2ecb6b3545eb5f064aff71e8f93f0566f1623983b78961745a602"
+        }
+      ],
+      "input": "contracts/rpc/version/authored.schema.json"
+    },
+    "generatedJsonSchema": {
+      "digest": "03c43a323baa66c6377e5205963985ada07c6305c71731ebdcd033cb7f0f4df5",
+      "files": [
+        {
+          "relativePath": "typespec.generated.schema.json",
+          "sha256": "8669d3edfe84af2f025d981c1eb3362830e06f56dbfa57a95b699e2ad2721cfb"
+        }
+      ],
+      "input": ".rpc-cross-evidence/canonical-admin/generated/typespec.generated.schema.json"
+    },
+    "mapping": null,
+    "typespec": {
+      "digest": "b90dc954954b08d0e926eaaea9db8dc50b2c6925164bd2030982e23ed6f3a1e4",
+      "files": [
+        {
+          "path": "main.tsp",
+          "sha256": "2f315dd39d5ade130a7ecf2fcd4597ea7778009037c42fa0be05d60b3b4b1d1d"
+        }
+      ],
+      "input": "contracts/rpc/version/main.tsp"
+    }
+  },
+  "runId": "546b67b36ee039648d6a0cf3dd78a94fd38a1103378ce0fdbd37e90e8bf1c793",
+  "schema": "ores.typespec-json-schema-validator.report/v1",
+  "status": "passed",
+  "toolchain": {
+    "jsonSchemaEmitter": "@typespec/json-schema",
+    "typespecCompiler": {
+      "available": true,
+      "command": "/home/runner/work/_actions/ORESoftware/typespec-json-schema-validator/bd503465dab8c5148fee722b443ed04ff126c9bf/node_modules/@typespec/compiler/cmd/tsp.js",
+      "version": "1.16.0"
+    },
+    "validator": {
+      "name": "@oresoftware/typespec-json-schema-validator",
+      "version": "0.1.0"
+    }
+  },
+  "zeroUnexplainedFindings": true
+}
