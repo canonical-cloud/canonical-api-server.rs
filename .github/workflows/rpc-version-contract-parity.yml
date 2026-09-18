@@ -107,16 +107,20 @@ jobs:
       - name: Materialize reproducibility evidence on this PR branch
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git add -f .typespec-json-schema-validator/report.json .typespec-json-schema-validator/contract-ir.json
+          git add -f Cargo.lock \
+            .typespec-json-schema-validator/report.json \
+            .typespec-json-schema-validator/contract-ir.json
           if git diff --cached --quiet; then
             echo "reproducibility evidence already current"
           else
             git config user.name "ores-stack-rpc-bot"
             git config user.email "ores-stack-rpc-bot@users.noreply.github.com"
-            git commit -m "chore(rpc): materialize contract evidence"
-            git push origin "HEAD:${{ github.head_ref }}"
+            git commit -m "chore(rpc): materialize lock and contract evidence"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${{ github.head_ref }}"
           fi
 
 
@@ -506,7 +510,7 @@ jobs:
           typespec: contracts/rpc-version/main.tsp
           schema: contracts/rpc-version/authored.schema.json
           generated_schema: .rpc-cross-evidence/sonus-regular/generated/typespec.generated.schema.json
-          expected_declarations: '["SonusAurisVersion.VersionError","SonusAurisVersion.VersionResponse","SonusAurisVersion.UserLookupHeaders","SonusAurisVersion.FindUsersResponse","SonusAurisVersion.FindUserByIdRequest","SonusAurisVersion.FindUserByIdResponse","SonusAurisVersion.UserLookupError"]'
+          expected_declarations: '["SonusAurisVersion.VersionError","SonusAurisVersion.VersionResponse","SonusAurisVersion.UserLookupHeaders","SonusAurisVersion.FindUsersRequest","SonusAurisVersion.FindUsersResponse","SonusAurisVersion.FindUserByIdRequest","SonusAurisVersion.FindUserByIdResponse","SonusAurisVersion.UserLookupError"]'
 
       - name: Prepare sonus-admin exact authorities
         shell: bash
