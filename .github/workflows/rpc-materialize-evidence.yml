@@ -81,6 +81,8 @@ jobs:
           export GIT_TERMINAL_PROMPT=0
           export GIT_CONFIG_GLOBAL="$global_config"
           export GIT_CONFIG_NOSYSTEM=1
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home"
+          mkdir -p "$CARGO_HOME"
           cargo generate-lockfile
 
           grep -Fq 'name = "canonical-lib"' Cargo.lock
