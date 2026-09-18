@@ -917,6 +917,8 @@ jobs:
 
       - name: Commit exact generated cross-source evidence
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git add -f .rpc-cross-evidence/sonus-regular/report.json .rpc-cross-evidence/sonus-regular/contract-ir.json \
@@ -928,5 +930,5 @@ jobs:
             echo "cross-source evidence already current"
           else
             git commit -m "chore(rpc): materialize cross-source contract evidence"
-            git push origin "HEAD:${{ github.head_ref }}"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${{ github.head_ref }}"
           fi
