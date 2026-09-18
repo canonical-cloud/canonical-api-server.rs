@@ -1,0 +1,81 @@
+name: Zed private Rust dependency projection
+
+on:
+  pull_request:
+    paths:
+      - ".zpkg.toml"
+      - "Cargo.toml"
+      - "interfaces.lock.json"
+      - "scripts/verify-zed-private-rust-dependency.sh"
+      - ".github/workflows/zed-private-rust-dependency.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".zpkg.toml"
+      - "Cargo.toml"
+      - "interfaces.lock.json"
+      - "scripts/verify-zed-private-rust-dependency.sh"
+      - ".github/workflows/zed-private-rust-dependency.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-private-rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  projection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact consumer source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+
+      - name: Require approved Canonical library read credential
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CANONICAL_LIB_READ_TOKEN:-}" ]]; then
+            echo "::error::CANONICAL_LIB_READ_TOKEN is required to acquire the pinned private source" >&2
+            exit 1
+          fi
+
+      - name: Check out exact pinned canonical-lib source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: canonical-cloud/canonical-lib-core
+          ref: d2f7371f01f257fbaee532b923f4c4b0d2c4dff4
+          token: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+          path: tmp/zed-private-deps/workspace/canonical-lib-core
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install pinned Zed package manager
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install \
+            --git https://github.com/zed-pkg/zed-cli \
+            --rev 96eb02864c627193be42ce4765f8b5324dc99d56 \
+            --locked \
+            --bin zed \
+            --root "$RUNNER_TEMP/zed-cli"
+          echo "$RUNNER_TEMP/zed-cli/bin" >> "$GITHUB_PATH"
+
+      - name: Certify workspace-backed Rust projection
+        env:
+          ZED_PKG_GITHUB_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+        shell: bash
+        run: bash scripts/verify-zed-private-rust-dependency.sh
