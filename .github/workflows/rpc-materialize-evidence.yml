@@ -105,12 +105,65 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          unexpected_tracked="$(git diff --name-only | grep -Ev '^(Cargo\.lock|\.typespec-json-schema-validator/(report|contract-ir)\.json)
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::unexpected generated paths would be materialized"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+
+          git ls-files --error-unmatch Cargo.lock
+          test -s Cargo.lock
+          test -s .typespec-json-schema-validator/report.json
+          test -s .typespec-json-schema-validator/contract-ir.json
+
+      - name: Upload exact-head reproducibility bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpc-reproducibility-${{ github.sha }}
+          path: |
+            Cargo.lock
+            .typespec-json-schema-validator/report.json
+            .typespec-json-schema-validator/contract-ir.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+ || true)"
+          if [[ -n "$unexpected_tracked" ]]; then
+            echo "::error::generator modified tracked paths outside the reproducibility bundle"
+            printf '%s\n' "$unexpected_tracked"
+            exit 1
+          fi
+
           git add -f \
             Cargo.lock \
             .typespec-json-schema-validator/report.json \
             .typespec-json-schema-validator/contract-ir.json
 
-          unexpected="$(git diff --cached --name-only | grep -Ev '^(Cargo\.lock|\.typespec-json-schema-validator/(report|contract-ir)\.json)$' || true)"
+          unexpected="$(git diff --cached --name-only | grep -Ev '^(Cargo\.lock|\.typespec-json-schema-validator/(report|contract-ir)\.json)
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::unexpected generated paths would be materialized"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+
+          git ls-files --error-unmatch Cargo.lock
+          test -s Cargo.lock
+          test -s .typespec-json-schema-validator/report.json
+          test -s .typespec-json-schema-validator/contract-ir.json
+
+      - name: Upload exact-head reproducibility bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpc-reproducibility-${{ github.sha }}
+          path: |
+            Cargo.lock
+            .typespec-json-schema-validator/report.json
+            .typespec-json-schema-validator/contract-ir.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+ || true)"
           if [[ -n "$unexpected" ]]; then
             echo "::error::unexpected generated paths would be materialized"
             printf '%s\n' "$unexpected"
