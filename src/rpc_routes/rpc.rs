@@ -7,7 +7,7 @@ use std::{future::Future, pin::Pin};
 use axum::Router;
 use canonical_api_server::AppState;
 use ores_api_docs::{
-    RouteMap, RpcV1Call, RpcV1Dispatcher, RpcV1HttpContext, RpcV1Receipt, rpc_v1_router,
+    rpc_v1_router, RouteMap, RpcV1Call, RpcV1Dispatcher, RpcV1HttpContext, RpcV1Receipt,
 };
 
 use super::{user, version};

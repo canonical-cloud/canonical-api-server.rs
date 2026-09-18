@@ -117,7 +117,10 @@ pub(crate) async fn find_users(
         ));
     }
     if !(1..=100).contains(&body.limit) {
-        return Err(rpc_error("invalid_limit", "limit must be between 1 and 100"));
+        return Err(rpc_error(
+            "invalid_limit",
+            "limit must be between 1 and 100",
+        ));
     }
 
     let raw = directory_client()?
@@ -127,7 +130,12 @@ pub(crate) async fn find_users(
     let resources = raw
         .get("Resources")
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| rpc_error("directory_response_invalid", "user directory response is invalid"))?;
+        .ok_or_else(|| {
+            rpc_error(
+                "directory_response_invalid",
+                "user directory response is invalid",
+            )
+        })?;
     let mut results = Vec::new();
     for value in resources {
         let summary = user_summary(value, None)?;
@@ -206,8 +214,12 @@ pub(crate) async fn find_user_by_id(
 }
 
 fn directory_client() -> Result<SharedAuthClient, UserLookupError> {
-    let base = std::env::var("SHARED_AUTH_BASE")
-        .map_err(|_| rpc_error("directory_not_configured", "SHARED_AUTH_BASE is not configured"))?;
+    let base = std::env::var("SHARED_AUTH_BASE").map_err(|_| {
+        rpc_error(
+            "directory_not_configured",
+            "SHARED_AUTH_BASE is not configured",
+        )
+    })?;
     SharedAuthClient::try_new(base)
         .map_err(|error| rpc_error("directory_not_configured", error.to_string()))
 }
