@@ -30,11 +30,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Refuse privileged private-source checks on fork PRs
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        shell: bash
+        run: |
+          echo "::error::private-source projection is not authorized for fork pull requests" >&2
+          exit 1
+
       - name: Check out exact consumer source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify checked-out consumer revision
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -53,7 +69,7 @@ jobs:
           fi
 
       - name: Check out exact pinned canonical-lib source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: canonical-cloud/canonical-lib-core
           ref: d2f7371f01f257fbaee532b923f4c4b0d2c4dff4
@@ -61,6 +77,13 @@ jobs:
           path: tmp/zed-private-deps/workspace/canonical-lib-core
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Verify exact pinned canonical-lib revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C tmp/zed-private-deps/workspace/canonical-lib-core rev-parse HEAD)" = \
+            "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"
 
       - name: Install checksum-pinned Zed v0.3.0
         shell: bash
@@ -84,6 +107,10 @@ jobs:
           "$bin_dir/zed" --version
           echo "$bin_dir" >> "$GITHUB_PATH"
 
-      - name: Certify workspace-backed Rust projection
+      - name: Certify released workspace-backed Rust projection
+        env:
+          # v0.3.0 predates zed-pkg/zed-cli#446. Switch this to `required`
+          # only together with the checksum-pinned release tracked by #447.
+          ZED_GIT_SOURCE_PATCH_MODE: legacy
         shell: bash
         run: bash scripts/verify-zed-private-rust-dependency.sh
