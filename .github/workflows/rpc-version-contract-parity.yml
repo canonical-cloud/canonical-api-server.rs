@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: rpc-regular-contract-${{ github.workflow }}-${{ github.ref }}
@@ -103,25 +103,6 @@ jobs:
           export GIT_CONFIG_GLOBAL="$credential_config"
           export GIT_CONFIG_NOSYSTEM=1
           cargo generate-lockfile
-
-      - name: Materialize reproducibility evidence on this PR branch
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git add -f Cargo.lock \
-            .typespec-json-schema-validator/report.json \
-            .typespec-json-schema-validator/contract-ir.json
-          if git diff --cached --quiet; then
-            echo "reproducibility evidence already current"
-          else
-            git config user.name "ores-stack-rpc-bot"
-            git config user.email "ores-stack-rpc-bot@users.noreply.github.com"
-            git commit -m "chore(rpc): materialize lock and contract evidence"
-            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${{ github.head_ref }}"
-          fi
 
 
       - name: Require committed current evidence
