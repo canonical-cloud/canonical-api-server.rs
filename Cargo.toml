@@ -18,8 +18,8 @@ axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
 ores-api-docs = { git = "https://github.com/ORESoftware/api-docs.git", rev = "252ec981bcbaedf5656fc02e5e581f5924d82061", package = "ores-api-docs", features = ["axum"] }
 ores-api-docs-operation-macros = { git = "https://github.com/ORESoftware/api-docs.git", rev = "252ec981bcbaedf5656fc02e5e581f5924d82061", package = "ores-api-docs-operation-macros" }
-canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "b95301a283e17f83eefc9b449068e33770e0181f" }
-canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "fcf1ff71fa6f8b17f20ea5de98a591347293ee2d", features = ["read-write"] }
+canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "463a5f42eb346b12dac96ef35fb603d430554713" }
+canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "0e9f7ae59cb23a929b31d25c5a2a89626a93b421", features = ["read-write"] }
 futures-util = "0.3.32"
 flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-env", rev = "d7bad9ea7dfc657653368237e08903514cdca1ec" }
 hmac = "0.12.1"
