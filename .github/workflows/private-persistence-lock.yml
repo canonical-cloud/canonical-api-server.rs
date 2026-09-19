@@ -5,14 +5,12 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "src/**"
       - ".github/workflows/private-persistence-lock.yml"
   push:
     branches: [main, dev]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "src/**"
       - ".github/workflows/private-persistence-lock.yml"
   workflow_dispatch:
 
