@@ -33,18 +33,56 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q '^name = "ores-api-docs"$' Cargo.lock || {
-            echo "::error::Cargo.lock does not contain ores-api-docs; regenerate it after changing Cargo.toml" >&2
-            exit 1
-          }
-          grep -q '^name = "ores-api-docs-operation-macros"$' Cargo.lock || {
-            echo "::error::Cargo.lock does not contain ores-api-docs-operation-macros; regenerate it after changing Cargo.toml" >&2
-            exit 1
-          }
-          grep -q 'd44140871357b324a032260bdb3d0b6c10a3c779' Cargo.lock || {
-            echo "::error::Cargo.lock is not pinned to the merged api-docs runtime d44140871357b324a032260bdb3d0b6c10a3c779" >&2
-            exit 1
-          }
+          python3 - <<'PY'
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          lock = tomllib.loads(Path("Cargo.lock").read_text())
+          dependencies = manifest.get("dependencies", {})
+          locked = lock.get("package", [])
+
+          dependency_names = (
+              "ores-api-docs",
+              "ores-api-docs-operation-macros",
+          )
+          errors = []
+          for dependency_name in dependency_names:
+              dependency = dependencies.get(dependency_name)
+              if not isinstance(dependency, dict):
+                  errors.append(f"Cargo.toml is missing table dependency {dependency_name}")
+                  continue
+              git = dependency.get("git")
+              rev = dependency.get("rev")
+              package = dependency.get("package", dependency_name)
+              if git != "https://github.com/ORESoftware/api-docs.git":
+                  errors.append(
+                      f"{dependency_name} must come from https://github.com/ORESoftware/api-docs.git, got {git!r}"
+                  )
+                  continue
+              if not isinstance(rev, str) or len(rev) != 40:
+                  errors.append(f"{dependency_name} must pin a full 40-character git rev")
+                  continue
+
+              matches = [entry for entry in locked if entry.get("name") == package]
+              if len(matches) != 1:
+                  errors.append(
+                      f"Cargo.lock must contain exactly one {package} package entry; found {len(matches)}"
+                  )
+                  continue
+              source = matches[0].get("source", "")
+              expected_prefix = f"git+{git}?rev={rev}#{rev}"
+              if source != expected_prefix:
+                  errors.append(
+                      f"Cargo.lock {package} source does not match Cargo.toml rev {rev}: {source!r}"
+                  )
+
+          if errors:
+              for error in errors:
+                  print(f"::error::{error}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
 
       - name: Fetch locked private dependencies with least privilege
