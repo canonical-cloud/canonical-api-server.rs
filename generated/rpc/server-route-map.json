@@ -1,24 +1,36 @@
 {
-  "schema_version": "1.0.0",
-  "service": "canonical-api-server",
   "map": {
-    "canonical_cloud.user.find_users": {
-      "path": "/v1/find-users",
-      "methods": ["POST"],
-      "rpc_key": "canonical_cloud.user.find_users",
-      "transports": ["http"]
-    },
     "canonical_cloud.user.find_user_by_id": {
+      "methods": [
+        "POST"
+      ],
       "path": "/v1/find-user-by-id",
-      "methods": ["POST"],
       "rpc_key": "canonical_cloud.user.find_user_by_id",
-      "transports": ["http"]
+      "transports": [
+        "http"
+      ]
+    },
+    "canonical_cloud.user.find_users": {
+      "methods": [
+        "POST"
+      ],
+      "path": "/v1/find-users",
+      "rpc_key": "canonical_cloud.user.find_users",
+      "transports": [
+        "http"
+      ]
     },
     "canonical_cloud.version.get_version": {
+      "methods": [
+        "GET"
+      ],
       "path": "/v1/version",
-      "methods": ["GET"],
       "rpc_key": "canonical_cloud.version.get_version",
-      "transports": ["http"]
+      "transports": [
+        "http"
+      ]
     }
-  }
+  },
+  "schema_version": "1.0.0",
+  "service": "canonical-api-server"
 }
