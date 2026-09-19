@@ -46,27 +46,49 @@ fn build_logger() -> Logger {
     })
 }
 
-/// The shared application logger, built on first use in each lifetime.
+/// Run `emit` with the active logger, holding the slot's READ lock for the
+/// whole emission.
+///
+/// The lock has to cover the write, not just the lookup. An earlier version
+/// handed out an `Arc<Logger>` and released the lock: an emitter could clone
+/// the Arc, lose the CPU, and have retirement take and close the logger before
+/// it wrote — and a closed next-loggers logger panics. That is the very failure
+/// retiring was introduced to remove, moved from "after shutdown" to "during
+/// it". With the read guard held here, retire_logger() cannot take its write
+/// lock until every emission in flight has finished, and no emission can start
+/// on a logger that is about to be closed.
+///
+/// `emit` must not log through this function again: std's RwLock may park a
+/// second read behind a waiting writer, and the two would deadlock. The only
+/// transport is the tracing bridge, which does not.
 ///
 /// A poisoned lock is recovered rather than propagated: this runs on error
 /// paths, and a panic elsewhere must not turn logging into a second panic.
-fn ores_logger() -> Arc<Logger> {
-    if let Some(logger) = ORES_LOGGER
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-    {
-        return Arc::clone(logger);
+fn with_ores_logger<T>(emit: impl FnOnce(&Logger) -> T) -> T {
+    let mut emit = Some(emit);
+    loop {
+        {
+            let slot = ORES_LOGGER.read().unwrap_or_else(PoisonError::into_inner);
+            if let Some(logger) = slot.as_ref() {
+                let emit = emit.take().expect("emit runs exactly once");
+                return emit(logger);
+            }
+        }
+        // Empty: first use, or retired. Build under the write lock, then go
+        // round again to take the read lock — std cannot downgrade a write
+        // guard, and a retirement may land in between, hence the loop.
+        ORES_LOGGER
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(|| Arc::new(build_logger()));
     }
-    let mut slot = ORES_LOGGER.write().unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(slot.get_or_insert_with(|| Arc::new(build_logger())))
 }
 
-/// End the active lifetime: take the logger out of the slot, THEN close it.
+/// End the active lifetime: take the logger out of the slot and close it.
 ///
-/// In that order, so no emitter can be handed a logger that is already closed.
-/// One that fetched its `Arc` a moment earlier may still write to it; that
-/// record races shutdown exactly as it would have under any design.
+/// The write lock is what makes this safe. It is granted only once no emission
+/// holds the read lock, so the logger being closed has no writer, and every
+/// later emitter finds the slot empty and builds a fresh one.
 fn retire_logger() -> Result<(), LoggerError> {
     let retired = ORES_LOGGER
         .write()
@@ -104,15 +126,16 @@ pub fn init() -> TelemetryGuard {
         .with_target(true)
         .init();
 
-    let ores_logger = ores_logger();
-    let _ = ores_logger
-        .info(vec![json!("telemetry initialized")])
-        .add_fields(JsonObject::from_iter([
-            ("service.name".to_string(), json!(SERVICE_NAME)),
-            ("service.namespace".to_string(), json!(SERVICE_NAMESPACE)),
-            ("log.destination".to_string(), json!("tracing-bridge")),
-        ]))
-        .send();
+    let _ = with_ores_logger(|logger| {
+        logger
+            .info(vec![json!("telemetry initialized")])
+            .add_fields(JsonObject::from_iter([
+                ("service.name".to_string(), json!(SERVICE_NAME)),
+                ("service.namespace".to_string(), json!(SERVICE_NAMESPACE)),
+                ("log.destination".to_string(), json!("tracing-bridge")),
+            ]))
+            .send()
+    });
     tracing::info!(
         service.name = SERVICE_NAME,
         service.namespace = SERVICE_NAMESPACE,
@@ -149,18 +172,20 @@ pub(crate) fn log_rpc_error(
     routine_id: &'static str,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = ores_logger()
-            .error(vec![json!("rpc operation failed")])
-            .add_fields(JsonObject::from_iter([
-                ("service.name".to_string(), json!(SERVICE_NAME)),
-                ("service.namespace".to_string(), json!(SERVICE_NAMESPACE)),
-                ("rpc.system".to_string(), json!("ores.rpc.v1")),
-                ("rpc.operation".to_string(), json!(operation_key)),
-                ("rpc.error_code".to_string(), json!(error_code)),
-            ]))
-            .add_trace(trace_id, false)
-            .add_routine_id(routine_id)
-            .send();
+        with_ores_logger(|logger| {
+            let _ = logger
+                .error(vec![json!("rpc operation failed")])
+                .add_fields(JsonObject::from_iter([
+                    ("service.name".to_string(), json!(SERVICE_NAME)),
+                    ("service.namespace".to_string(), json!(SERVICE_NAMESPACE)),
+                    ("rpc.system".to_string(), json!("ores.rpc.v1")),
+                    ("rpc.operation".to_string(), json!(operation_key)),
+                    ("rpc.error_code".to_string(), json!(error_code)),
+                ]))
+                .add_trace(trace_id, false)
+                .add_routine_id(routine_id)
+                .send();
+        });
     }));
 }
 
@@ -267,7 +292,7 @@ mod tests {
     fn a_guard() -> TelemetryGuard {
         // What init() returns, without installing the once-only global
         // subscriber.
-        let _ = ores_logger();
+        with_ores_logger(|_| ());
         TelemetryGuard {
             _not_constructible_elsewhere: (),
         }
@@ -347,6 +372,73 @@ mod tests {
                 );
             }
         });
+    }
+
+    /// The race, made deterministic. An emitter is stopped INSIDE its emission —
+    /// past the point where it obtained the logger, before it writes — and
+    /// retirement is started while it sits there.
+    ///
+    /// When emitters were handed an `Arc<Logger>` and the lock released,
+    /// retirement completed at once, closed the logger under the emitter, and
+    /// the emitter's write panicked ("logger is closed"): the closed-logger
+    /// failure, moved from after shutdown to during it.
+    #[test]
+    fn retirement_waits_for_an_emission_already_in_flight() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = retire_logger();
+        with_ores_logger(|_| ()); // an active lifetime to retire
+
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (retired_tx, retired_rx) = mpsc::channel::<()>();
+
+        let emitter = std::thread::spawn(move || {
+            with_subscriber(|captured| {
+                let wrote = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    with_ores_logger(|logger| {
+                        entered_tx.send(()).expect("signal entered");
+                        release_rx.recv().expect("wait for release");
+                        let _ = logger.error(vec![json!("written mid-retirement")]).send();
+                    });
+                }));
+                (wrote.is_ok(), captured.count("written mid-retirement"))
+            })
+        });
+
+        entered_rx
+            .recv()
+            .expect("the emitter is inside its emission");
+        let retirer = std::thread::spawn(move || {
+            let result = retire_logger();
+            retired_tx.send(()).expect("signal retired");
+            result
+        });
+
+        // The emitter holds the read lock and is going nowhere until released,
+        // so retirement must still be waiting. A wait that can only time out is
+        // the one place a sleep is the honest tool: the assertion is that
+        // something does NOT happen.
+        assert!(
+            retired_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+            "the logger was retired under an emitter that had not written yet"
+        );
+
+        release_tx.send(()).expect("release the emitter");
+        let (wrote_without_panic, delivered) = emitter.join().expect("emitter thread");
+        retirer.join().expect("retirer thread").expect("close");
+        retired_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("retirement completes once the emission has");
+
+        assert!(wrote_without_panic, "the emitter wrote to a closed logger");
+        assert_eq!(delivered, 1, "the in-flight record was lost");
+        assert!(ORES_LOGGER
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_none());
     }
 
     /// The premise of the tests above, checked against the pinned next-loggers
