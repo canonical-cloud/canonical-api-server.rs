@@ -1,0 +1,76 @@
+name: Private persistence dependency lock
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - ".github/workflows/private-persistence-lock.yml"
+  push:
+    branches: [main, dev]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - ".github/workflows/private-persistence-lock.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact head
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Require approved private dependency credential
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$CANONICAL_LIB_READ_TOKEN" ]]; then
+            echo '::error::CANONICAL_LIB_READ_TOKEN is required for read-only private Canonical dependencies.'
+            exit 1
+          fi
+      - name: Regenerate expected lock mechanically
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.CANONICAL_LIB_READ_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Cargo.lock /tmp/Cargo.lock.checked-in
+          cargo +1.95.0 generate-lockfile
+          mkdir -p target/lock-evidence
+          cp Cargo.lock target/lock-evidence/Cargo.lock.generated
+      - name: Compile exact dependency graph
+        run: cargo +1.95.0 check --workspace --all-targets --all-features --locked
+      - name: Retain generated lock
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: private-persistence-lock-${{ github.run_id }}
+          path: target/lock-evidence/Cargo.lock.generated
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Require checked-in lock parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! cmp -s /tmp/Cargo.lock.checked-in Cargo.lock; then
+            echo 'Cargo.lock is stale; use the uploaded Cargo.lock.generated artifact.' >&2
+            diff -u /tmp/Cargo.lock.checked-in Cargo.lock || true
+            exit 1
+          fi
