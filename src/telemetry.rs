@@ -1,7 +1,8 @@
 //! Ores structured logging bridged into the service's JSON tracing stream.
 //!
-//! The bridge installs one subscriber and never attaches credentials, URLs,
-//! request bodies, identity values, or upstream response bodies.
+//! The bridge installs one subscriber when the process does not already own
+//! one, and never attaches credentials, URLs, request bodies, identity values,
+//! or upstream response bodies.
 
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -119,12 +120,19 @@ pub fn init() -> TelemetryGuard {
         .ok()
         .and_then(|value| EnvFilter::try_new(value).ok())
         .unwrap_or_else(|| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
+
+    // A process may already have a global tracing dispatcher installed by a
+    // framework, embedding host, or an earlier telemetry lifetime. `.init()`
+    // panics in that case, which made the otherwise restartable logger lifecycle
+    // fail before it even reached ORES_LOGGER. The bridge emits through the
+    // CURRENT tracing dispatcher, so an existing subscriber is valid ownership,
+    // not an error we should turn into a service crash.
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .json()
         .with_ansi(false)
         .with_target(true)
-        .init();
+        .try_init();
 
     let _ = with_ores_logger(|logger| {
         logger
@@ -162,14 +170,15 @@ pub fn init() -> TelemetryGuard {
 ///   the whole emit is unwind-guarded so a panicking transport cannot escape
 ///   into the RPC dispatch.
 ///
-/// `trace_id` and `routine_id` are always inline `ores-trace-` /
-/// `ores-routine-` literals supplied by the call site; this function never
-/// mints or assembles an id.
+/// `ores_trace_id` and `ores_routine_id` are always inline `ores-trace-` /
+/// `ores-routine-` literals supplied by the call site. They are STATIC source
+/// identities, deliberately named differently from a dynamic W3C `trace_id` /
+/// `span_id`; this function never mints or assembles either kind of id.
 pub(crate) fn log_rpc_error(
     operation_key: &str,
     error_code: &str,
-    trace_id: &'static str,
-    routine_id: &'static str,
+    ores_trace_id: &'static str,
+    ores_routine_id: &'static str,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         with_ores_logger(|logger| {
@@ -181,9 +190,10 @@ pub(crate) fn log_rpc_error(
                     ("rpc.system".to_string(), json!("ores.rpc.v1")),
                     ("rpc.operation".to_string(), json!(operation_key)),
                     ("rpc.error_code".to_string(), json!(error_code)),
+                    ("rpc.layer".to_string(), json!("dispatch")),
                 ]))
-                .add_trace(trace_id, false)
-                .add_routine_id(routine_id)
+                .add_trace(ores_trace_id, false)
+                .add_routine_id(ores_routine_id)
                 .send();
         });
     }));
