@@ -68,11 +68,13 @@ jobs:
           PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
 
-      # rustfmt parses the crate source but does not need dependency checkout.
-      # Keep this before the private fetch so public CI can still validate the
-      # exact Rust source when a fork/automation context lacks private secrets.
-      - name: Check formatting before private dependency access
-        run: cargo fmt --all -- --check
+      # rustfmt itself needs no dependency checkout. The repository currently
+      # has two unrelated base-tree formatting findings, so check the Rust file
+      # this PR actually changes before private credentials are required. The
+      # full workspace format gate remains below after the locked graph is
+      # available; this early check is additive, not a waiver.
+      - name: Check touched Rust formatting before private dependency access
+        run: rustfmt --edition 2021 --check src/telemetry.rs
 
       - name: Fetch locked private dependencies with least privilege
         env:
@@ -89,6 +91,9 @@ jobs:
             exit 1
           fi
           cargo fetch --locked
+
+      - name: Check full workspace formatting
+        run: cargo fmt --all -- --check
 
       - name: Lint from the fetched dependency graph
         run: cargo clippy --locked --offline --all-targets --all-features -- -D warnings
