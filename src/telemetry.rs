@@ -6,7 +6,7 @@
 
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, PoisonError, RwLock,
+    Arc, Mutex as LifecycleMutex, PoisonError, RwLock,
 };
 
 use next_loggers::{
@@ -28,9 +28,17 @@ const SERVICE_NAMESPACE: &str = "canonical-cloud";
 /// that same closed logger — `get_or_init` never rebuilds — so a late RPC error,
 /// or any test that ran telemetry twice, emitted into a closed logger and
 /// nothing said so. Ownership is now explicit: the slot owns the logger, the
-/// guard RETIRES it (takes it out, then closes it), and the next emitter finds
-/// the slot empty and builds a fresh one.
+/// final active guard RETIRES it (takes it out, then closes it), and the next
+/// emitter finds the slot empty and builds a fresh one.
 static ORES_LOGGER: RwLock<Option<Arc<Logger>>> = RwLock::new(None);
+
+/// Number of live TelemetryGuards.
+///
+/// This count is protected separately from the logger slot so emission can keep
+/// using the read/write lock optimized for the hot path. The lifecycle mutex is
+/// touched only by init/drop. Drop holds it through final retirement, so a new
+/// init cannot race in between "count reached zero" and closing the old logger.
+static ACTIVE_TELEMETRY_GUARDS: LifecycleMutex<usize> = LifecycleMutex::new(0);
 
 /// How many loggers have been built in this process. One per active lifetime
 /// is the invariant the hot path depends on; the tests assert it.
@@ -85,7 +93,7 @@ fn with_ores_logger<T>(emit: impl FnOnce(&Logger) -> T) -> T {
     }
 }
 
-/// End the active lifetime: take the logger out of the slot and close it.
+/// End the logger instance itself: take it out of the slot and close it.
 ///
 /// The write lock is what makes this safe. It is granted only once no emission
 /// holds the read lock, so the logger being closed has no writer, and every
@@ -101,15 +109,54 @@ fn retire_logger() -> Result<(), LoggerError> {
     }
 }
 
-/// Ends the telemetry lifetime when dropped. Holds nothing: the slot owns the
-/// logger, so a guard cannot keep a closed one alive.
+/// Register one telemetry owner.
+///
+/// Multiple callers can legitimately initialize the same process (embedding,
+/// tests, layered application setup). They share the logger, and no individual
+/// guard owns the right to close it while another guard is still live.
+fn begin_telemetry_lifetime() -> TelemetryGuard {
+    let mut active = ACTIVE_TELEMETRY_GUARDS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    *active = active
+        .checked_add(1)
+        .expect("telemetry guard count overflow");
+    TelemetryGuard {
+        _not_constructible_elsewhere: (),
+    }
+}
+
+/// Release one telemetry owner, retiring the logger only when the final owner
+/// leaves. The lifecycle mutex stays held through retirement so a concurrent
+/// init cannot register a new owner against a logger that is already committed
+/// to shutdown.
+fn end_telemetry_lifetime() -> Result<(), LoggerError> {
+    let mut active = ACTIVE_TELEMETRY_GUARDS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if *active == 0 {
+        // Drop must remain fail-open even if an internal lifecycle invariant is
+        // violated. Do not underflow and panic during another unwind.
+        eprintln!("telemetry: guard lifecycle underflow; logger left untouched");
+        return Ok(());
+    }
+    *active -= 1;
+    if *active == 0 {
+        retire_logger()
+    } else {
+        Ok(())
+    }
+}
+
+/// Ends one telemetry ownership lifetime when dropped. The shared logger is
+/// retired only when the final live guard leaves.
 pub struct TelemetryGuard {
     _not_constructible_elsewhere: (),
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        if retire_logger().is_err() {
+        if end_telemetry_lifetime().is_err() {
             eprintln!("telemetry: Ores logger shutdown failed; final records may be incomplete");
         }
     }
@@ -134,6 +181,11 @@ pub fn init() -> TelemetryGuard {
         .with_target(true)
         .try_init();
 
+    // Register ownership BEFORE touching the logger. If another guard is being
+    // dropped concurrently, either its final retirement finishes first and this
+    // init builds a fresh logger, or this registration makes its drop non-final.
+    let guard = begin_telemetry_lifetime();
+
     let _ = with_ores_logger(|logger| {
         logger
             .info(vec![json!("telemetry initialized")])
@@ -152,9 +204,7 @@ pub fn init() -> TelemetryGuard {
         "telemetry initialized"
     );
 
-    TelemetryGuard {
-        _not_constructible_elsewhere: (),
-    }
+    guard
 }
 
 /// Emits an RPC operation failure through the ores-otel (next-loggers) seam.
@@ -245,8 +295,8 @@ mod tests {
     use std::io::Write;
     use std::sync::Mutex;
 
-    /// The slot and the build counter are process-wide, so lifecycle tests
-    /// cannot overlap.
+    /// The slot, guard count and build counter are process-wide, so lifecycle
+    /// tests cannot overlap.
     static SERIAL: Mutex<()> = Mutex::new(());
 
     #[derive(Clone, Default)]
@@ -302,16 +352,22 @@ mod tests {
     fn a_guard() -> TelemetryGuard {
         // What init() returns, without installing the once-only global
         // subscriber.
+        let guard = begin_telemetry_lifetime();
         with_ores_logger(|_| ());
-        TelemetryGuard {
-            _not_constructible_elsewhere: (),
-        }
+        guard
+    }
+
+    fn active_guard_count() -> usize {
+        *ACTIVE_TELEMETRY_GUARDS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     #[test]
     fn the_logger_is_built_once_per_active_lifetime() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let _ = retire_logger();
+        assert_eq!(active_guard_count(), 0);
         with_subscriber(|captured| {
             let before = LOGGER_BUILDS.load(Ordering::Relaxed);
             let guard = a_guard();
@@ -326,6 +382,50 @@ mod tests {
             assert_eq!(captured.count("rpc operation failed"), 50);
             drop(guard);
         });
+        assert_eq!(active_guard_count(), 0);
+    }
+
+    #[test]
+    fn overlapping_guards_share_the_logger_until_the_last_guard_drops() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = retire_logger();
+        assert_eq!(active_guard_count(), 0);
+        with_subscriber(|captured| {
+            let before = LOGGER_BUILDS.load(Ordering::Relaxed);
+            let first = a_guard();
+            let second = a_guard();
+            assert_eq!(active_guard_count(), 2);
+
+            an_error("demo.overlap.before_first_drop");
+            drop(first);
+            assert_eq!(active_guard_count(), 1);
+            assert!(
+                ORES_LOGGER
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_some(),
+                "dropping one of two guards must not retire their shared logger"
+            );
+
+            an_error("demo.overlap.after_first_drop");
+            assert_eq!(
+                LOGGER_BUILDS.load(Ordering::Relaxed) - before,
+                1,
+                "the remaining guard must keep the original logger alive"
+            );
+            assert_eq!(captured.count("demo.overlap.before_first_drop"), 1);
+            assert_eq!(captured.count("demo.overlap.after_first_drop"), 1);
+
+            drop(second);
+            assert_eq!(active_guard_count(), 0);
+            assert!(
+                ORES_LOGGER
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_none(),
+                "the final guard must retire the logger"
+            );
+        });
     }
 
     #[test]
@@ -334,6 +434,7 @@ mod tests {
         // was written into a closed logger and lost without a word.
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let _ = retire_logger();
+        assert_eq!(active_guard_count(), 0);
         with_subscriber(|captured| {
             let guard = a_guard();
             an_error("demo.users.before_shutdown");
@@ -343,7 +444,7 @@ mod tests {
                     .read()
                     .unwrap_or_else(PoisonError::into_inner)
                     .is_none(),
-                "the guard must retire the logger, not leave a closed one behind"
+                "the final guard must retire the logger, not leave a closed one behind"
             );
 
             an_error("demo.users.after_shutdown");
@@ -361,6 +462,7 @@ mod tests {
     fn telemetry_can_be_started_again() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let _ = retire_logger();
+        assert_eq!(active_guard_count(), 0);
         with_subscriber(|captured| {
             let before = LOGGER_BUILDS.load(Ordering::Relaxed);
             for lifetime in 0..3 {
@@ -382,6 +484,7 @@ mod tests {
                 );
             }
         });
+        assert_eq!(active_guard_count(), 0);
     }
 
     /// The race, made deterministic. An emitter is stopped INSIDE its emission —
@@ -399,7 +502,8 @@ mod tests {
 
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let _ = retire_logger();
-        with_ores_logger(|_| ()); // an active lifetime to retire
+        assert_eq!(active_guard_count(), 0);
+        with_ores_logger(|_| ()); // an active logger instance to retire directly
 
         let (entered_tx, entered_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
@@ -479,6 +583,7 @@ mod tests {
     #[test]
     fn an_error_before_init_has_somewhere_to_go() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(active_guard_count(), 0);
         // No subscriber: the bridge must notice and use stderr instead of
         // emitting a tracing event nobody receives.
         assert!(
