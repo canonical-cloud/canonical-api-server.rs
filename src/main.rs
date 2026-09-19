@@ -18,6 +18,8 @@ use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
 
+const AUDIT_DATABASE_URL_ENV: &str = "CANONICAL_AUDIT_DATABASE_URL";
+
 fn shutdown_grace() -> Duration {
     const DEFAULT_MS: u64 = 30_000;
     let milliseconds = canonical_api_server::flags::var("SHUTDOWN_GRACE_MS")
@@ -39,16 +41,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _telemetry = telemetry::init();
 
     let config = Config::from_env()?;
-    let dual_orm = match config.database_url.as_deref() {
-        Some(url) => {
-            let context = DualOrmContext::connect_read_write(url, CapabilityProfile::ApiReadWrite)
-                .await?;
-            context.ping_both().await?;
-            context.assert_catalog_congruence().await?;
-            Some(context)
-        }
-        None => None,
-    };
+
+    // Audit-domain persistence and quote/readiness persistence are separate
+    // trust planes. The audit URL is consumed only by canonical-orm-core and no
+    // raw audit driver handle is retained by the API process.
+    let audit_database_url = canonical_api_server::flags::var(AUDIT_DATABASE_URL_ENV)
+        .map_err(|_| io::Error::other("CANONICAL_AUDIT_DATABASE_URL is required"))?;
+    if audit_database_url.trim().is_empty() {
+        return Err(io::Error::other("CANONICAL_AUDIT_DATABASE_URL must not be empty").into());
+    }
+    if config
+        .database_url
+        .as_deref()
+        .is_some_and(|quote_url| quote_url == audit_database_url)
+    {
+        return Err(io::Error::other(
+            "CANONICAL_AUDIT_DATABASE_URL must not equal quote/readiness DATABASE_URL",
+        )
+        .into());
+    }
+
+    let dual_orm =
+        DualOrmContext::connect_read_write(&audit_database_url, CapabilityProfile::ApiReadWrite)
+            .await?;
+    dual_orm.ping_both().await?;
+    dual_orm.assert_catalog_congruence().await?;
+
+    // `DATABASE_URL` remains the existing quote/readiness database on current
+    // main. Its exact quote role/schema/RLS/grant contract is checked by the
+    // readiness route. A follow-up replaces this raw pool with the opaque
+    // QuoteStore now hardened in canonical-orm-core#22.
     let database = match config.database_url.as_deref() {
         Some(url) => Some(Database::connect(url).await?),
         None => None,
@@ -57,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let observation_service =
         readiness_observation_ingest::ObservationService::from_env(database.clone())?;
     let database_configured = database.is_some();
-    let dual_orm_verified = dual_orm.is_some();
+    let dual_orm_verified = true;
     let gemini_configured = config.gemini_api_key.is_some();
     let quote_request_contract = std::any::type_name::<QuoteRequest>();
 
