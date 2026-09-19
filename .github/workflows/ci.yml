@@ -68,6 +68,12 @@ jobs:
           PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
 
+      # rustfmt parses the crate source but does not need dependency checkout.
+      # Keep this before the private fetch so public CI can still validate the
+      # exact Rust source when a fork/automation context lacks private secrets.
+      - name: Check formatting before private dependency access
+        run: cargo fmt --all -- --check
+
       - name: Fetch locked private dependencies with least privilege
         env:
           CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
@@ -83,9 +89,6 @@ jobs:
             exit 1
           fi
           cargo fetch --locked
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
 
       - name: Lint from the fetched dependency graph
         run: cargo clippy --locked --offline --all-targets --all-features -- -D warnings
