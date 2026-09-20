@@ -18,6 +18,8 @@ use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
 
+const AUDIT_DATABASE_URL_ENV: &str = "CANONICAL_AUDIT_DATABASE_URL";
+
 fn shutdown_grace() -> Duration {
     const DEFAULT_MS: u64 = 30_000;
     let milliseconds = canonical_api_server::flags::var("SHUTDOWN_GRACE_MS")
@@ -26,6 +28,41 @@ fn shutdown_grace() -> Duration {
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_MS);
     Duration::from_millis(milliseconds)
+}
+
+fn audit_database_url(customer_database_url: Option<&str>) -> Result<Option<String>, io::Error> {
+    let configured = canonical_api_server::flags::var(AUDIT_DATABASE_URL_ENV).ok();
+    validate_audit_database_url(customer_database_url, configured.as_deref())
+        .map(|value| value.map(str::to_owned))
+}
+
+fn validate_audit_database_url<'a>(
+    customer_database_url: Option<&str>,
+    audit_database_url: Option<&'a str>,
+) -> Result<Option<&'a str>, io::Error> {
+    match audit_database_url {
+        None if customer_database_url.is_some() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CANONICAL_AUDIT_DATABASE_URL is required when DATABASE_URL is configured; the application store and audit-plane capability credentials must remain separate",
+        )),
+        None => Ok(None),
+        Some(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CANONICAL_AUDIT_DATABASE_URL must not be empty",
+                ));
+            }
+            if customer_database_url.is_some_and(|customer| customer.trim() == value) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CANONICAL_AUDIT_DATABASE_URL must not reuse DATABASE_URL; the quote/readiness store and audit-plane capability login are separate trust boundaries",
+                ));
+            }
+            Ok(Some(value))
+        }
+    }
 }
 
 #[tokio::main]
@@ -39,7 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _telemetry = telemetry::init();
 
     let config = Config::from_env()?;
-    let dual_orm = match config.database_url.as_deref() {
+    let audit_database_url = audit_database_url(config.database_url.as_deref())?;
+    let dual_orm = match audit_database_url.as_deref() {
         Some(url) => {
             let context = DualOrmContext::connect_read_write(url, CapabilityProfile::ApiReadWrite)
                 .await?;
@@ -114,5 +152,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             format!("server shutdown forced by {trigger:?}"),
         )
         .into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_audit_database_url;
+
+    #[test]
+    fn audit_plane_credential_is_separate_from_application_store() {
+        assert!(validate_audit_database_url(Some("postgres://app@db/app"), None).is_err());
+        assert!(validate_audit_database_url(None, None).unwrap().is_none());
+        assert!(
+            validate_audit_database_url(
+                Some("postgres://app@db/app"),
+                Some("postgres://app@db/app")
+            )
+            .is_err()
+        );
+        assert_eq!(
+            validate_audit_database_url(
+                Some("postgres://app@db/app"),
+                Some(" postgres://audit_rw@db/audit ")
+            )
+            .unwrap(),
+            Some("postgres://audit_rw@db/audit")
+        );
+        assert_eq!(
+            validate_audit_database_url(None, Some("postgres://audit_rw@db/audit")).unwrap(),
+            Some("postgres://audit_rw@db/audit")
+        );
     }
 }
