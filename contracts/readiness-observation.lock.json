@@ -25,5 +25,11 @@
     "unknownFields": "deny",
     "initialSubstantiveReview": "unreviewed"
   },
+  "storageAuthority": {
+    "repository": "canonical-cloud/canonical-orm-core",
+    "commit": "5547c4c2f5c177be83788b3976505a5c942a991b",
+    "surface": "QuoteStore::append_readiness_observation",
+    "rawDriverHandles": "forbidden"
+  },
   "linear": "DEN-3938"
 }
