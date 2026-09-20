@@ -16,9 +16,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use canonical_orm_core::{
-    QuoteStore, ReadinessObservationAppend, ReadinessObservationStoreError,
-};
+use canonical_orm_core::{QuoteStore, ReadinessObservationAppend, ReadinessObservationStoreError};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -814,7 +812,10 @@ mod tests {
             Err(BuildError::InvalidKeyDocument)
         ));
         let weak = r#"{"keys":[{"keyId":"key.customer-ci","sourceId":"source.customer-ci","organization":"org:example","ownerSubject":"org:example","secret":"short"}]}"#;
-        assert!(matches!(KeyRing::parse(weak), Err(BuildError::InvalidSecret)));
+        assert!(matches!(
+            KeyRing::parse(weak),
+            Err(BuildError::InvalidSecret)
+        ));
     }
 
     #[tokio::test]

@@ -152,7 +152,10 @@ pub(crate) async fn find_users(
             "ores-trace-P1JOzMmivi4GiQ8oOijNs",
             ROUTINE_ID,
         );
-        return Err(rpc_error("invalid_limit", "limit must be between 1 and 100"));
+        return Err(rpc_error(
+            "invalid_limit",
+            "limit must be between 1 and 100",
+        ));
     }
 
     let raw = directory_client()
@@ -326,8 +329,12 @@ pub(crate) async fn find_user_by_id(
 }
 
 fn directory_client() -> Result<SharedAuthClient, UserLookupError> {
-    let base = std::env::var("SHARED_AUTH_BASE")
-        .map_err(|_| rpc_error("directory_not_configured", "SHARED_AUTH_BASE is not configured"))?;
+    let base = std::env::var("SHARED_AUTH_BASE").map_err(|_| {
+        rpc_error(
+            "directory_not_configured",
+            "SHARED_AUTH_BASE is not configured",
+        )
+    })?;
     SharedAuthClient::try_new(base)
         .map_err(|error| rpc_error("directory_not_configured", error.to_string()))
 }

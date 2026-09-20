@@ -20,7 +20,11 @@ fn dependency_rev(manifest: &str, dependency: &str) -> Result<String, String> {
         .find('"')
         .ok_or_else(|| format!("{dependency} rev is unterminated"))?;
     let rev = &tail[..rev_end];
-    if rev.len() != 40 || !rev.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+    if rev.len() != 40
+        || !rev
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(format!("{dependency} rev must be exact lowercase 40-hex"));
     }
     Ok(rev.to_owned())
@@ -55,20 +59,20 @@ fn replace_git_source(
     let (start, end) = package_bounds(lock, package)?;
     let block = &lock[start..end];
     let source_prefix = format!("source = \"git+{repository}?rev=");
-    let source_start = block
-        .find(&source_prefix)
-        .ok_or_else(|| format!("{package} lock entry does not use expected repository {repository}"))?;
+    let source_start = block.find(&source_prefix).ok_or_else(|| {
+        format!("{package} lock entry does not use expected repository {repository}")
+    })?;
     let absolute_start = start + source_start;
     let line_end = lock[absolute_start..]
         .find('\n')
         .map(|offset| absolute_start + offset)
         .unwrap_or(lock.len());
     let old_line = lock[absolute_start..line_end].to_owned();
-    let new_line = format!(
-        "source = \"git+{repository}?rev={desired_rev}#{desired_rev}\""
-    );
+    let new_line = format!("source = \"git+{repository}?rev={desired_rev}#{desired_rev}\"");
     if old_line == new_line {
-        return Err(format!("{package} source already equals desired revision; expected one source transition"));
+        return Err(format!(
+            "{package} source already equals desired revision; expected one source transition"
+        ));
     }
     lock.replace_range(absolute_start..line_end, &new_line);
     Ok(())
@@ -76,7 +80,10 @@ fn replace_git_source(
 
 fn remove_api_direct_sea_orm(lock: &mut String, manifest: &str) -> Result<(), String> {
     if direct_dependency_present(manifest, "sea-orm") {
-        return Err("Cargo.toml still declares direct sea-orm; refusing opaque-boundary lock derivation".into());
+        return Err(
+            "Cargo.toml still declares direct sea-orm; refusing opaque-boundary lock derivation"
+                .into(),
+        );
     }
     let (start, end) = package_bounds(lock, API_NAME)?;
     let block = lock[start..end].to_owned();
@@ -93,7 +100,9 @@ fn require_source(lock: &str, package: &str, repository: &str, rev: &str) -> Res
     let (start, end) = package_bounds(lock, package)?;
     let expected = format!("source = \"git+{repository}?rev={rev}#{rev}\"");
     if !lock[start..end].contains(&expected) {
-        return Err(format!("derived lock does not contain expected {package} source"));
+        return Err(format!(
+            "derived lock does not contain expected {package} source"
+        ));
     }
     Ok(())
 }
@@ -170,7 +179,11 @@ fn main() {
         eprintln!("usage: derive-persistence-lock <Cargo.toml> <Cargo.lock> <output>");
         std::process::exit(2);
     }
-    if let Err(error) = run(Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3])) {
+    if let Err(error) = run(
+        Path::new(&args[1]),
+        Path::new(&args[2]),
+        Path::new(&args[3]),
+    ) {
         eprintln!("{error}");
         std::process::exit(1);
     }
