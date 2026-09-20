@@ -29,52 +29,45 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
+      - name: Check touched Rust formatting before private access
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt +1.95.0 --edition 2021 --check \
+            src/main.rs \
+            src/lib.rs \
+            src/contract.rs \
+            src/readiness.rs \
+            src/readiness_observation_ingest.rs \
+            src/telemetry.rs \
+            tools/derive-persistence-lock.rs
+
       - name: Require committed RPC lockfile parity before network access
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import pathlib
           import tomllib
+          from pathlib import Path
 
-          manifest = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
-          deps = manifest["dependencies"]
-          runtime = deps["ores-api-docs"]
-          macros = deps["ores-api-docs-operation-macros"]
-
-          for name, dep in [
-              ("ores-api-docs", runtime),
-              ("ores-api-docs-operation-macros", macros),
-          ]:
-              if dep.get("git") != "https://github.com/ORESoftware/api-docs.git":
-                  raise SystemExit(f"{name} must come from the reviewed ORESoftware/api-docs repository")
-              rev = dep.get("rev", "")
-              if len(rev) != 40 or any(ch not in "0123456789abcdef" for ch in rev):
-                  raise SystemExit(f"{name} must be pinned to an exact lowercase 40-hex revision")
-
-          if runtime["rev"] != macros["rev"]:
-              raise SystemExit(
-                  "ores-api-docs and ores-api-docs-operation-macros must use one exact source revision"
-              )
-
-          lock = pathlib.Path("Cargo.lock").read_text()
-          for package in ["ores-api-docs", "ores-api-docs-operation-macros"]:
-              if f'name = "{package}"' not in lock:
-                  raise SystemExit(f"Cargo.lock does not contain {package}; regenerate it after changing Cargo.toml")
-          if runtime["rev"] not in lock:
-              raise SystemExit(
-                  f"Cargo.lock is not pinned to the api-docs revision declared by Cargo.toml: {runtime['rev']}"
-              )
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          lock = Path("Cargo.lock").read_text()
+          dependencies = manifest["dependencies"]
+          runtime_rev = dependencies["ores-api-docs"]["rev"]
+          macros_rev = dependencies["ores-api-docs-operation-macros"]["rev"]
+          assert runtime_rev == macros_rev, (
+              "ores-api-docs runtime and operation macros must use one reviewed revision"
+          )
+          needle = (
+              "git+https://github.com/ORESoftware/api-docs.git?rev="
+              f"{runtime_rev}#{runtime_rev}"
+          )
+          assert lock.count(needle) >= 2, (
+              "Cargo.lock does not contain the exact reviewed api-docs runtime/macros revision "
+              f"{runtime_rev}; regenerate the lock mechanically"
+          )
           PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
-
-      # rustfmt itself needs no dependency checkout. The repository currently
-      # has two unrelated base-tree formatting findings, so check the Rust file
-      # this PR actually changes before private credentials are required. The
-      # full workspace format gate remains below after the locked graph is
-      # available; this early check is additive, not a waiver.
-      - name: Check touched Rust formatting before private dependency access
-        run: rustfmt --edition 2021 --check src/telemetry.rs
 
       - name: Fetch locked private dependencies with least privilege
         env:
@@ -92,7 +85,7 @@ jobs:
           fi
           cargo fetch --locked
 
-      - name: Check full workspace formatting
+      - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Lint from the fetched dependency graph
@@ -113,7 +106,7 @@ jobs:
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
           dependencies = manifest["dependencies"]
-          assert dependencies["shared-auth-client"]["rev"] == "cc57a85b276bee81ad94decc87df2f48d49cab9f"
+          assert dependencies["shared-auth-client"]["rev"] == "0b6ceb78a632ec4501dd2d7dca155d91de0e2d89"
           assert dependencies["next-loggers"]["rev"] == "ca176fb6768a9750d262a536952268625ffd3a8a"
           assert dependencies["canonical-lib"]["git"].endswith("/canonical-lib-core")
           PY

@@ -10,10 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "contracts/readiness-observation.lock.json"
 MODULE_PATH = ROOT / "src/readiness_observation_ingest.rs"
 WORKFLOW_PATH = ROOT / ".github/workflows/readiness-observation-contract.yml"
+CARGO_PATH = ROOT / "Cargo.toml"
 
 EXPECTED_AUTHORITY_COMMIT = "bed2dacd7ccd8242ed4fba4d077b84a01a55e343"
 EXPECTED_ADMITTED_HEAD = "c8e4d8dba6c2ac7820aff0bd06b28e27241364b0"
 EXPECTED_TJSV_COMMIT = "3171025cbe03a7026a71ce94eea18c910e1431b2"
+EXPECTED_ORM_COMMIT = "5547c4c2f5c177be83788b3976505a5c942a991b"
 
 
 def fail(message: str) -> None:
@@ -23,10 +25,7 @@ def fail(message: str) -> None:
 lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
 module = MODULE_PATH.read_text(encoding="utf-8")
 workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-manifest = json.loads((ROOT / "db/namespace.json").read_text(encoding="utf-8"))
-schema = (ROOT / "db/schema.sql").read_text(encoding="utf-8")
-grants = (ROOT / "db/grants.sql").read_text(encoding="utf-8")
+cargo = CARGO_PATH.read_text(encoding="utf-8")
 
 if lock.get("schemaVersion") != 1:
     fail("readiness contract lock schema version drift")
@@ -61,6 +60,13 @@ if lock.get("runtimeProjection") != {
     "initialSubstantiveReview": "unreviewed",
 }:
     fail("Rust runtime projection metadata drift")
+if lock.get("storageAuthority") != {
+    "repository": "canonical-cloud/canonical-orm-core",
+    "commit": EXPECTED_ORM_COMMIT,
+    "surface": "QuoteStore::append_readiness_observation",
+    "rawDriverHandles": "forbidden",
+}:
+    fail("readiness observation storage authority drift")
 if lock.get("linear") != "DEN-3938":
     fail("Linear provenance drift")
 
@@ -121,30 +127,31 @@ for required in (
     "MAX_CLOCK_SKEW_SECONDS: i64 = 300",
     "MAX_BODY_BYTES: usize = 256 * 1024",
     "source sequence must be the next contiguous value",
-    "pg_advisory_xact_lock",
-    "allow_memory: false",
+    "QuoteStore",
+    "ReadinessObservationAppend",
+    ".append_readiness_observation(",
 ):
     if required not in module:
-        fail(f"readiness transport/security invariant missing: {required}")
+        fail(f"readiness transport/storage invariant missing: {required}")
+
+for forbidden in (
+    "sea_orm::",
+    "DatabaseConnection",
+    "DatabaseTransaction",
+    "pg_advisory_xact_lock",
+    "INSERT INTO canonical_readiness_observation",
+    "UPDATE canonical_readiness_observation",
+    "DELETE FROM canonical_readiness_observation",
+):
+    if forbidden in module:
+        fail(f"raw observation persistence leaked back into API module: {forbidden}")
 
 if 'time = { version = "0.3", features = ["formatting", "parsing"] }' not in cargo:
     fail("RFC 3339 parsing feature is not pinned")
-
-if "canonical_readiness_observation" not in schema:
-    fail("declarative schema omits readiness observation ledger")
-for required in (
-    "canonical_readiness_observation_owner_policy",
-    "canonical_readiness_observation_owner_source_sequence_unique",
-    "canonical_readiness_observation_prior_record_sha256_check",
-    "canonical_readiness_observation_record_sha256_check",
-    "canonical_readiness_observation_substantive_review_check",
-):
-    if required not in schema:
-        fail(f"readiness ledger constraint missing: {required}")
-if "canonical_readiness_observation API privilege contract is not append-only" not in grants:
-    fail("append-only runtime grant assertion missing")
-if "canonical_readiness_observation" not in manifest["access"]["appendOnlyTables"]:
-    fail("readiness ledger is not declared append-only")
+if EXPECTED_ORM_COMMIT not in cargo:
+    fail("Cargo.toml does not pin the reviewed observation storage authority")
+if '\nsea-orm = ' in cargo:
+    fail("API server must not directly depend on SeaORM after opaque persistence migration")
 
 for required in (
     EXPECTED_AUTHORITY_COMMIT,
@@ -165,8 +172,10 @@ print(
             "authorityCommit": EXPECTED_AUTHORITY_COMMIT,
             "admittedHead": EXPECTED_ADMITTED_HEAD,
             "tjsvCommit": EXPECTED_TJSV_COMMIT,
+            "ormCommit": EXPECTED_ORM_COMMIT,
             "runtimeProjection": str(MODULE_PATH.relative_to(ROOT)),
-            "appendOnlyLedger": True,
+            "storageSurface": "QuoteStore::append_readiness_observation",
+            "rawDriverHandles": False,
             "initialSubstantiveReview": "unreviewed",
         },
         sort_keys=True,

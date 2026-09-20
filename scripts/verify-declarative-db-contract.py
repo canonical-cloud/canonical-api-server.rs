@@ -13,6 +13,8 @@ ROLES = {
     "webRuntime": "canonical_cloud__quote__web_ro",
 }
 DPM_REVISION = "d05a7880987ddaa271fa88b52c787390ef12b899"
+ORM_REVISION = "5547c4c2f5c177be83788b3976505a5c942a991b"
+READINESS_AUTHORITY = "canonical-cloud/canonical-orm-core/sql/quote-readiness.sql"
 
 
 def fail(message: str) -> None:
@@ -23,10 +25,11 @@ manifest = json.loads((ROOT / "db/namespace.json").read_text())
 schema = (ROOT / "db/schema.sql").read_text()
 bootstrap = (ROOT / "db/bootstrap.sql").read_text()
 grants = (ROOT / "db/grants.sql").read_text()
-persistence = (ROOT / "src/persistence.rs").read_text()
+lib_rs = (ROOT / "src/lib.rs").read_text()
 observation_ingest = (ROOT / "src/readiness_observation_ingest.rs").read_text()
 readiness = (ROOT / "src/readiness.rs").read_text()
 main = (ROOT / "src/main.rs").read_text()
+cargo = (ROOT / "Cargo.toml").read_text()
 
 if manifest["namespaceId"] != NAMESPACE:
     fail("namespace id drift")
@@ -43,6 +46,7 @@ if manifest.get("readiness") != {
     "runtimeRole": "canonical_cloud__quote__api_rw",
     "livenessEndpoint": "/healthz",
     "failClosed": True,
+    "authority": READINESS_AUTHORITY,
 }:
     fail("readiness manifest drift")
 if manifest["access"]["appendOnlyTables"] != [
@@ -53,7 +57,7 @@ if manifest["access"]["appendOnlyTables"] != [
     fail("append-only table manifest drift")
 
 schema_digest = hashlib.sha256(schema.encode()).hexdigest()
-if schema_digest != manifest["declarativeMigration"]["sourceSha256"]:
+if schema_digest != manifest["declarativeMigration"]["localWitness"]["sourceSha256"]:
     fail("schema digest drift")
 
 for forbidden in (
@@ -84,9 +88,6 @@ for table in table_names:
         fail(f"missing qualified table: {qualified}")
     if f"ALTER TABLE {qualified}\n    FORCE ROW LEVEL SECURITY" not in schema:
         fail(f"forced RLS missing for {qualified}")
-    runtime_source = observation_ingest if table == "canonical_readiness_observation" else persistence
-    if table not in runtime_source:
-        fail(f"runtime persistence omits {table}")
 
 required_constraints = (
     "canonical_context_json_object_check",
@@ -144,15 +145,11 @@ for json_column in (
     if f"jsonb_typeof({json_column})" not in schema:
         fail(f"JSON object shape check missing: {json_column}")
 
-if "public.canonical_" in persistence or "public.canonical_" in observation_ingest:
-    fail("runtime SQL must not bind Canonical objects to public")
 if "canonical_cloud__quote" not in bootstrap:
     fail("role-level Canonical search_path pin is missing")
-
 for role in ROLES.values():
     if role not in bootstrap:
         fail(f"bootstrap omits role {role}")
-
 for required in (
     "REVOKE CREATE ON SCHEMA public FROM PUBLIC;",
     "CREATE SCHEMA IF NOT EXISTS canonical_cloud__quote",
@@ -163,7 +160,6 @@ for required in (
 ):
     if required not in bootstrap:
         fail(f"bootstrap hardening omits {required}")
-
 for required in (
     "canonical_cloud__quote__web_ro",
     "GRANT SELECT, INSERT, UPDATE",
@@ -179,25 +175,42 @@ for required in (
 if "GRANT ALL" in grants:
     fail("broad grants are forbidden")
 
+# The application repository keeps the declarative files above as a compatibility
+# witness, but runtime SQL/driver ownership belongs exclusively to orm-core.
 for required in (
-    'route(\n        "/readyz"',
-    "canonical_cloud__quote__api_rw",
-    "canonical_quote_operation_quote_owner_fk",
-    "canonical_quote_operation_owner_policy",
-    "canonical_quote_event_quote_owner_fk",
-    "canonical_model_attempt_quote_owner_fk",
-    "canonical_model_attempt_status_finished_check",
-    "canonical_readiness_observation_owner_policy",
-    "canonical_readiness_observation_owner_received_idx",
-    "has_table_privilege",
-    "rolbypassrls",
+    "use canonical_orm_core::quotes as persistence;",
+    "Option<QuoteStore>",
 ):
-    if required not in readiness:
-        fail(f"readiness contract omits {required}")
-if "merge(readiness::router(readiness_database))" not in main:
-    fail("binary does not serve the fail-closed readiness router")
+    if required not in lib_rs:
+        fail(f"quote runtime does not use opaque orm-core persistence: {required}")
+if "QuoteStore::connect" not in main:
+    fail("binary does not construct the fail-closed opaque quote store")
+if "merge(readiness::router(readiness_store))" not in main:
+    fail("binary does not serve readiness from the opaque quote store")
+if "database.readiness().await" not in readiness:
+    fail("readiness route does not delegate to QuoteStore::readiness")
+if ".append_readiness_observation(" not in observation_ingest:
+    fail("observation ingress does not delegate durable append to QuoteStore")
 if "merge(readiness_observation_ingest::router(observation_service))" not in main:
     fail("binary does not serve the readiness observation ingress")
+if ORM_REVISION not in cargo:
+    fail("Cargo.toml does not pin the reviewed orm-core storage authority")
+if "\nsea-orm = " in cargo:
+    fail("API server must not directly depend on SeaORM")
+if (ROOT / "src/persistence.rs").exists():
+    fail("duplicate API-local quote persistence authority must not exist")
+
+runtime_sources = "\n".join((lib_rs, main, readiness, observation_ingest))
+for forbidden in (
+    "sea_orm::",
+    "DatabaseConnection",
+    "DatabaseTransaction",
+    "pg_advisory_xact_lock",
+    "INSERT INTO canonical_quote",
+    "INSERT INTO canonical_readiness_observation",
+):
+    if forbidden in runtime_sources:
+        fail(f"raw database implementation leaked into API runtime: {forbidden}")
 
 for required in (
     '"/api/v1/readiness/sources/{source_id}/observations"',
@@ -205,8 +218,7 @@ for required in (
     "x-canonical-webhook-signature",
     "canonical.readiness.observation.v1",
     "canonical.readiness.observation.receipt.v1",
-    "substantive_review: \"unreviewed\"",
-    "pg_advisory_xact_lock",
+    'substantive_review: "unreviewed"',
     "source sequence must be the next contiguous value",
 ):
     if required not in observation_ingest:
@@ -233,7 +245,11 @@ print(
             "tables": list(table_names),
             "required_constraints": list(required_constraints),
             "runtime_readiness": "/readyz",
+            "readiness_authority": READINESS_AUTHORITY,
             "observation_ingress": "/v1/readiness/sources/{sourceId}/observations",
+            "runtime_storage": "canonical-orm-core::QuoteStore",
+            "orm_revision": ORM_REVISION,
+            "raw_driver_handles": False,
             "web_direct_database_access": False,
         },
         sort_keys=True,

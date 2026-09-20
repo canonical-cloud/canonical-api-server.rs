@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "githubOwner": "canonical-cloud",
   "project": "quote",
   "namespaceId": "canonical_cloud__quote",
@@ -10,8 +10,14 @@
     "schema": "canonical_cloud__quote",
     "publicObjectPolicy": "forbidden"
   },
+  "ownership": {
+    "ddlAuthority": "canonical-cloud/canonical-orm-core",
+    "runtimeStore": "canonical-cloud/canonical-orm-core::QuoteStore",
+    "transportConsumer": "canonical-cloud/canonical-api-server.rs",
+    "infrastructureProvisioning": "canonical-cloud/canonical-infra"
+  },
   "services": {
-    "apiOwner": "canonical-cloud/canonical-api-server.rs",
+    "apiConsumer": "canonical-cloud/canonical-api-server.rs",
     "webCaller": "canonical-cloud/canonical-web-server.rs"
   },
   "roles": {
@@ -36,15 +42,26 @@
   "declarativeMigration": {
     "tool": "declarative-migrations/declarative-postgres-migrate.rs",
     "revision": "d05a7880987ddaa271fa88b52c787390ef12b899",
-    "source": "db/schema.sql",
-    "sourceSha256": "9d1e94eba1d44c571addfbcc1fac2340080c78abb2e3a21ff3676798425dff07",
-    "bootstrap": "db/bootstrap.sql",
-    "grants": "db/grants.sql"
+    "authoritativeRepository": "canonical-cloud/canonical-orm-core",
+    "authoritativePaths": {
+      "schema": "sql/quote/schema.sql",
+      "bootstrap": "sql/quote/bootstrap.sql",
+      "grants": "sql/quote/grants.sql"
+    },
+    "transitionSourceCommit": "20d196ab9defba894650785d014a56e57d2451ee",
+    "localWitness": {
+      "schema": "db/schema.sql",
+      "sourceSha256": "9d1e94eba1d44c571addfbcc1fac2340080c78abb2e3a21ff3676798425dff07",
+      "bootstrap": "db/bootstrap.sql",
+      "grants": "db/grants.sql",
+      "editableAuthority": false
+    }
   },
   "readiness": {
     "endpoint": "/readyz",
     "runtimeRole": "canonical_cloud__quote__api_rw",
     "livenessEndpoint": "/healthz",
-    "failClosed": true
+    "failClosed": true,
+    "authority": "canonical-cloud/canonical-orm-core/sql/quote-readiness.sql"
   }
 }

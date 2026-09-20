@@ -1,9 +1,17 @@
 # Persistence contract
 
-The API database identity owns only Canonical quote tables and never reads
-Shared Auth, Supabase Auth, or unrelated tenant tables directly.
+The API process consumes two physically separate persistence planes:
 
-## Durable records
+1. `CANONICAL_AUDIT_DATABASE_URL` is the customer audit domain and is exposed to
+   this server only through `canonical-orm-core` capability verification. No raw
+   audit driver handle is retained in application state.
+2. `DATABASE_URL` is the quote/readiness plane. Its PostgreSQL realization and
+   runtime store are owned by `canonical-cloud/canonical-orm-core`; this server
+   owns transport, authentication, orchestration, and protocol responses only.
+
+The two URLs must not be the same credential or database trust plane.
+
+## Quote/readiness durable records
 
 - `canonical_context`: owner-scoped operational context selected by the API;
 - `canonical_quote`: immutable normalized request, application Markdown,
@@ -11,40 +19,52 @@ Shared Auth, Supabase Auth, or unrelated tenant tables directly.
   bounded error code;
 - `canonical_model_attempt`: provider/model and start/finish metadata only;
 - `canonical_quote_event`: append-only status sequence used to recover the
-  state represented by REST and WebSocket responses.
+  state represented by REST and WebSocket responses;
+- `canonical_readiness_observation`: signed-observation receipt stream with
+  per-source contiguous sequencing and a domain-separated record hash chain.
 
 Raw API keys, internal service tokens, and provider error bodies are never
-stored. Application logs contain quote IDs and bounded error codes, not prompts,
-context, model output, or user identifiers.
+stored. Application logs contain bounded identifiers/error codes, not prompts,
+context, model output, database credentials, or user secrets.
 
 ## Ownership and transactions
 
-Every lookup and mutation:
+`canonical-orm-core::QuoteStore` is the opaque runtime persistence boundary. It
+owns the SeaORM and Diesel pools and fails closed during construction unless the
+exact quote runtime role, search path, object ownership, forced RLS, policies,
+constraints, indexes, and grants are independently witnessed through both
+ORMs. Raw quote/readiness driver handles do not belong in API application state.
 
-1. starts a PostgreSQL transaction;
-2. installs the validated Shared Auth subject in
-   `app.current_subject` and compatibility JWT settings;
-3. applies an explicit owner predicate;
-4. executes against tables with forced row-level security;
-5. commits the quote mutation and durable event atomically.
+Named quote operations and readiness-observation append operations execute
+inside orm-core. Observation append owns the advisory stream lock, event-id
+idempotency, contiguous sequence check, previous-record lookup, hash-chain
+construction, and immutable insert.
 
-The runtime login is a non-owner, non-superuser, non-`BYPASSRLS` role without
-role memberships. WebSocket notifications are disposable hints; current state
-is always recovered from `canonical_quote`.
+Every owner-scoped lookup or mutation installs the validated subject in
+`app.current_subject`, applies explicit owner predicates, and executes against
+forced-RLS tables. WebSocket notifications are disposable hints; durable state
+is always recovered from PostgreSQL.
 
-## Context snapshot
+## DDL and migration ownership
 
-Quote creation loads the authenticated owner's single active row. A partial
-unique index on `owner_subject WHERE active = TRUE` prevents ambiguous active
-contexts. A legacy `context_record_id` field is accepted only for compatibility,
-then discarded and omitted from the persisted normalized request. The API stores
-copies of the selected record's Markdown and JSON plus its compiled
-application-controlled Markdown. Later edits to `canonical_context` cannot
-silently alter the inputs that produced an existing quote.
+The authoritative declarative quote persistence sources are in
+`canonical-cloud/canonical-orm-core`:
 
-## Migration
+- `sql/quote/bootstrap.sql`
+- `sql/quote/schema.sql`
+- `sql/quote/grants.sql`
+- `sql/quote-readiness.sql`
 
-[`../db/schema.sql`](../db/schema.sql) is idempotent for initial deployment and
-documents runtime grants. Apply it through the reviewed migration identity.
-Subsequent production changes should move to numbered, forward-only migrations
-owned by `canonical-infra`.
+Infrastructure provisions the database/network/secrets and executes approved
+migration/declarative deployment procedures; it does not own the domain DDL.
+
+During the DEN-3938 transition, this repository's
+`db/{bootstrap,schema,grants}.sql` files remain **frozen compatibility witnesses**
+for existing declarative-postgres CI. They are not a second editable authority.
+`db/namespace.json` records the orm-core source location and transition source
+commit. The follow-up consumer/deployment cutover should materialize those files
+from orm-core or remove them when CI/deployment reads orm-core directly.
+
+Future production quote-schema changes originate in `canonical-orm-core` and
+use reviewed forward migration/declarative migration planning there. They do not
+originate in this API repository or in `canonical-infra`.

@@ -6,6 +6,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/**"
+      - "tools/derive-persistence-lock.rs"
       - ".github/workflows/private-persistence-lock.yml"
   push:
     branches: [main, dev]
@@ -13,6 +14,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/**"
+      - "tools/derive-persistence-lock.rs"
       - ".github/workflows/private-persistence-lock.yml"
   workflow_dispatch:
 
@@ -29,8 +31,31 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Derive credential-free persistence lock witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/lock-evidence
+          rustc +1.95.0 --edition 2021 tools/derive-persistence-lock.rs -o /tmp/derive-persistence-lock
+          /tmp/derive-persistence-lock Cargo.toml Cargo.lock target/lock-evidence/Cargo.lock.mechanical
+          rustfmt +1.95.0 --edition 2021 --check tools/derive-persistence-lock.rs
+          sha256sum target/lock-evidence/Cargo.lock.mechanical \
+            | tee target/lock-evidence/Cargo.lock.mechanical.sha256
+
+      - name: Retain mechanical lock witness before private access
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: private-persistence-lock-mechanical-${{ github.run_id }}
+          path: |
+            target/lock-evidence/Cargo.lock.mechanical
+            target/lock-evidence/Cargo.lock.mechanical.sha256
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Require approved private dependency credential
         env:
           CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
@@ -41,7 +66,8 @@ jobs:
             echo '::error::CANONICAL_LIB_READ_TOKEN is required for read-only private Canonical dependencies.'
             exit 1
           fi
-      - name: Regenerate expected lock mechanically
+
+      - name: Regenerate expected lock with Cargo
         env:
           CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
@@ -53,24 +79,31 @@ jobs:
           set -euo pipefail
           cp Cargo.lock /tmp/Cargo.lock.checked-in
           cargo +1.95.0 generate-lockfile
-          mkdir -p target/lock-evidence
           cp Cargo.lock target/lock-evidence/Cargo.lock.generated
+          cmp -s target/lock-evidence/Cargo.lock.mechanical Cargo.lock || {
+            echo 'mechanical persistence-lock witness differs from Cargo generate-lockfile' >&2
+            diff -u target/lock-evidence/Cargo.lock.mechanical Cargo.lock || true
+            exit 1
+          }
+
       - name: Compile exact dependency graph
         run: cargo +1.95.0 check --workspace --all-targets --all-features --locked
-      - name: Retain generated lock
+
+      - name: Retain Cargo-generated lock
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: private-persistence-lock-${{ github.run_id }}
+          name: private-persistence-lock-generated-${{ github.run_id }}
           path: target/lock-evidence/Cargo.lock.generated
           if-no-files-found: warn
           retention-days: 14
+
       - name: Require checked-in lock parity
         shell: bash
         run: |
           set -euo pipefail
           if ! cmp -s /tmp/Cargo.lock.checked-in Cargo.lock; then
-            echo 'Cargo.lock is stale; use the uploaded Cargo.lock.generated artifact.' >&2
+            echo 'Cargo.lock is stale; use the reviewed generated lock artifact.' >&2
             diff -u /tmp/Cargo.lock.checked-in Cargo.lock || true
             exit 1
           fi

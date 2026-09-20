@@ -96,7 +96,12 @@ def main() -> None:
         fail("consumer paths differ from the reviewed contract")
     runtime_source = (ROOT / runtime).read_text(encoding="utf-8")
     domain_source = (ROOT / domain).read_text(encoding="utf-8")
-    if "use canonical_lib::interfaces::QuoteRequest;" not in runtime_source:
+
+    # Accept either a direct `use canonical_lib::interfaces::QuoteRequest` or a
+    # grouped import such as `use canonical_lib::{..., interfaces::QuoteRequest}`.
+    # The compile-time type_name edge below proves that the imported symbol is
+    # actually used; this avoids coupling the contract gate to rustfmt/import style.
+    if "interfaces::QuoteRequest" not in runtime_source:
         fail("runtime does not import the generated QuoteRequest type")
     if "std::any::type_name::<QuoteRequest>()" not in runtime_source:
         fail("runtime does not establish a compile-time interface edge")
