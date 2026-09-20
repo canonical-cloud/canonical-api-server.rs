@@ -18,6 +18,7 @@ use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
 
+const ADMIN_DATABASE_URL_ENV: &str = "CANONICAL_ADMIN_DATABASE_URL";
 const AUDIT_DATABASE_URL_ENV: &str = "CANONICAL_AUDIT_DATABASE_URL";
 
 fn shutdown_grace() -> Duration {
@@ -31,6 +32,12 @@ fn shutdown_grace() -> Duration {
 }
 
 fn audit_database_url(customer_database_url: Option<&str>) -> Result<Option<String>, io::Error> {
+    if canonical_api_server::flags::var(ADMIN_DATABASE_URL_ENV).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CANONICAL_ADMIN_DATABASE_URL belongs to the isolated admin plane and is forbidden in the customer API process",
+        ));
+    }
     let configured = canonical_api_server::flags::var(AUDIT_DATABASE_URL_ENV).ok();
     validate_audit_database_url(customer_database_url, configured.as_deref())
         .map(|value| value.map(str::to_owned))
