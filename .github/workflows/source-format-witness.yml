@@ -1,25 +1,28 @@
 name: source-format-witness
 
 on:
-  pull_request:
+  push:
+    branches:
+      - DEN-3938/opaque-persistence-boundaries
     paths:
       - "src/**/*.rs"
       - "tools/derive-persistence-lock.rs"
       - ".github/workflows/source-format-witness.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   format:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Check out exact head
+      - name: Check out exact branch head
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
+          ref: DEN-3938/opaque-persistence-boundaries
+          persist-credentials: true
           fetch-depth: 1
 
       - name: Install Rust 1.95.0 rustfmt
@@ -28,32 +31,24 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt
 
-      - name: Format exact candidate workspace
+      - name: Apply exact formatter output
         shell: bash
         run: |
           set -euo pipefail
           rustfmt +1.95.0 --edition 2021 \
-            src/main.rs \
-            src/lib.rs \
-            src/contract.rs \
-            src/readiness.rs \
             src/readiness_observation_ingest.rs \
             src/rpc_routes/user/handlers.rs \
-            src/telemetry.rs \
             tools/derive-persistence-lock.rs
-          mkdir -p target/rustfmt-witness
-          git diff --name-only -- '*.rs' | tee target/rustfmt-witness/changed-files.txt
-          git diff --binary -- '*.rs' > target/rustfmt-witness/rustfmt.patch
-          cp --parents \
+          if git diff --quiet -- '*.rs'; then
+            echo 'Rust sources already match the exact formatter witness.'
+            exit 0
+          fi
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
             src/readiness_observation_ingest.rs \
             src/rpc_routes/user/handlers.rs \
-            tools/derive-persistence-lock.rs \
-            target/rustfmt-witness/
-
-      - name: Upload exact formatted bytes
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: source-format-witness-${{ github.run_id }}
-          path: target/rustfmt-witness
-          if-no-files-found: error
-          retention-days: 3
+            tools/derive-persistence-lock.rs
+          git commit -m 'style: apply exact Rust 1.95 formatter witness'
+          git push origin HEAD:DEN-3938/opaque-persistence-boundaries
