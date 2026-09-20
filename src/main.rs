@@ -6,7 +6,7 @@ mod rpc_routes;
 mod shutdown;
 mod telemetry;
 
-use std::{io, time::Duration};
+use std::{env, io, time::Duration};
 
 use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
@@ -43,38 +43,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env()?;
 
-    if std::env::var_os(ADMIN_DATABASE_URL_ENV).is_some() {
+    if env::var_os(ADMIN_DATABASE_URL_ENV).is_some() {
         return Err(io::Error::other(
             "CANONICAL_ADMIN_DATABASE_URL belongs to the isolated admin plane and is forbidden in the customer API",
         )
         .into());
     }
 
-    // Audit-domain persistence and quote/readiness persistence are separate
-    // trust planes. The audit URL is consumed only by canonical-orm-core and no
-    // raw audit driver handle is retained by the API process.
-    let audit_database_url = canonical_api_server::flags::var(AUDIT_DATABASE_URL_ENV)
-        .map_err(|_| io::Error::other("CANONICAL_AUDIT_DATABASE_URL is required"))?;
-    let audit_database_url = audit_database_url.trim();
-    if audit_database_url.is_empty() {
-        return Err(io::Error::other("CANONICAL_AUDIT_DATABASE_URL must not be empty").into());
-    }
-    if config
+    let quote_database_configured = config
         .database_url
         .as_deref()
-        .is_some_and(|quote_url| quote_url.trim() == audit_database_url)
-    {
-        return Err(io::Error::other(
-            "CANONICAL_AUDIT_DATABASE_URL must not equal quote/readiness DATABASE_URL",
-        )
-        .into());
-    }
+        .is_some_and(|value| !value.trim().is_empty());
 
-    let dual_orm =
-        DualOrmContext::connect_read_write(audit_database_url, CapabilityProfile::ApiReadWrite)
-            .await?;
-    dual_orm.ping_both().await?;
-    dual_orm.assert_catalog_congruence().await?;
+    // A completely database-free process remains a supported health/dev mode.
+    // Once either customer persistence plane is configured, audit identity is
+    // explicit and mandatory: quote/readiness must never run as a partial
+    // configuration without the audit boundary being verified too.
+    let audit_database_url = match env::var(AUDIT_DATABASE_URL_ENV) {
+        Ok(value) if value.trim().is_empty() => {
+            return Err(io::Error::other("CANONICAL_AUDIT_DATABASE_URL must not be empty").into());
+        }
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) if quote_database_configured => {
+            return Err(io::Error::other(
+                "CANONICAL_AUDIT_DATABASE_URL is required whenever quote/readiness DATABASE_URL is configured",
+            )
+            .into());
+        }
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(io::Error::other(
+                "CANONICAL_AUDIT_DATABASE_URL is configured but is not valid UTF-8",
+            )
+            .into());
+        }
+    };
+
+    let mut dual_orm_verified = false;
+    if let Some(audit_database_url) = audit_database_url.as_deref() {
+        let audit_database_url = audit_database_url.trim();
+        if config
+            .database_url
+            .as_deref()
+            .is_some_and(|quote_url| quote_url.trim() == audit_database_url)
+        {
+            return Err(io::Error::other(
+                "CANONICAL_AUDIT_DATABASE_URL must not equal quote/readiness DATABASE_URL",
+            )
+            .into());
+        }
+
+        let dual_orm =
+            DualOrmContext::connect_read_write(audit_database_url, CapabilityProfile::ApiReadWrite)
+                .await?;
+        dual_orm.ping_both().await?;
+        dual_orm.assert_catalog_congruence().await?;
+        dual_orm_verified = true;
+    }
 
     // `DATABASE_URL` remains the existing quote/readiness database on current
     // main. This raw pool is a temporary compatibility boundary; this draft is
@@ -88,7 +113,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let observation_service =
         readiness_observation_ingest::ObservationService::from_env(database.clone())?;
     let database_configured = database.is_some();
-    let dual_orm_verified = true;
     let gemini_configured = config.gemini_api_key.is_some();
     let quote_request_contract = std::any::type_name::<QuoteRequest>();
 
