@@ -12,8 +12,7 @@ use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
 use canonical_lib::{audit_data::table, interfaces::QuoteRequest};
-use canonical_orm_core::{CapabilityProfile, DualOrmContext};
-use sea_orm::Database;
+use canonical_orm_core::{CapabilityProfile, DualOrmContext, QuoteStore};
 use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -50,15 +49,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let quote_database_configured = config
-        .database_url
-        .as_deref()
-        .is_some_and(|value| !value.trim().is_empty());
+    let quote_database_url = match config.database_url.as_deref() {
+        Some(value) if value.trim().is_empty() => {
+            return Err(io::Error::other("DATABASE_URL is configured but empty").into());
+        }
+        Some(value) => Some(value.trim()),
+        None => None,
+    };
+    let quote_database_configured = quote_database_url.is_some();
 
     // A completely database-free process remains a supported health/dev mode.
-    // Once either customer persistence plane is configured, audit identity is
-    // explicit and mandatory: quote/readiness must never run as a partial
-    // configuration without the audit boundary being verified too.
+    // Once quote/readiness persistence is configured, the separate audit plane
+    // must be configured and verified too. Neither credential is ever exposed
+    // as a raw driver handle to application state.
     let audit_database_url = match env::var(AUDIT_DATABASE_URL_ENV) {
         Ok(value) if value.trim().is_empty() => {
             return Err(io::Error::other("CANONICAL_AUDIT_DATABASE_URL must not be empty").into());
@@ -82,11 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dual_orm_verified = false;
     if let Some(audit_database_url) = audit_database_url.as_deref() {
         let audit_database_url = audit_database_url.trim();
-        if config
-            .database_url
-            .as_deref()
-            .is_some_and(|quote_url| quote_url.trim() == audit_database_url)
-        {
+        if quote_database_url.is_some_and(|quote_url| quote_url == audit_database_url) {
             return Err(io::Error::other(
                 "CANONICAL_AUDIT_DATABASE_URL must not equal quote/readiness DATABASE_URL",
             )
@@ -101,18 +100,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dual_orm_verified = true;
     }
 
-    // `DATABASE_URL` remains the existing quote/readiness database on current
-    // main. This raw pool is a temporary compatibility boundary; this draft is
-    // not promotable until it is replaced by canonical-orm-core's opaque
-    // QuoteStore and named observation append operation.
-    let database = match config.database_url.as_deref() {
-        Some(url) => Some(Database::connect(url).await?),
+    // QuoteStore owns both SeaORM and Diesel handles and certifies the complete
+    // quote runtime role/schema/RLS/grant contract before it can escape.
+    let quote_store = match quote_database_url {
+        Some(url) => Some(QuoteStore::connect(url).await?),
         None => None,
     };
-    let readiness_database = database.clone();
+    let readiness_store = quote_store.clone();
     let observation_service =
-        readiness_observation_ingest::ObservationService::from_env(database.clone())?;
-    let database_configured = database.is_some();
+        readiness_observation_ingest::ObservationService::from_env(quote_store.clone())?;
+    let database_configured = quote_store.is_some();
     let gemini_configured = config.gemini_api_key.is_some();
     let quote_request_contract = std::any::type_name::<QuoteRequest>();
 
@@ -120,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = AppState::new(
         config.internal_auth_token,
         config.gemini_model.clone(),
-        database,
+        quote_store,
     );
     if let Some(api_key) = config.gemini_api_key {
         state = state.with_gemini(GeminiClient::new(api_key, config.gemini_model.clone())?);
@@ -140,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = build_router(state.clone())
         .merge(rpc_routes::router(state))
-        .merge(readiness::router(readiness_database))
+        .merge(readiness::router(readiness_store))
         .merge(readiness_observation_ingest::router(observation_service));
     info!(
         address = %config.bind_address,
