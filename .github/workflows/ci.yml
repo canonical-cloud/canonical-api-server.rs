@@ -33,19 +33,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q '^name = "ores-api-docs"$' Cargo.lock || {
-            echo "::error::Cargo.lock does not contain ores-api-docs; regenerate it after changing Cargo.toml" >&2
-            exit 1
-          }
-          grep -q '^name = "ores-api-docs-operation-macros"$' Cargo.lock || {
-            echo "::error::Cargo.lock does not contain ores-api-docs-operation-macros; regenerate it after changing Cargo.toml" >&2
-            exit 1
-          }
-          grep -q 'd44140871357b324a032260bdb3d0b6c10a3c779' Cargo.lock || {
-            echo "::error::Cargo.lock is not pinned to the merged api-docs runtime d44140871357b324a032260bdb3d0b6c10a3c779" >&2
-            exit 1
-          }
+          python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          manifest = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
+          deps = manifest["dependencies"]
+          runtime = deps["ores-api-docs"]
+          macros = deps["ores-api-docs-operation-macros"]
+
+          for name, dep in [
+              ("ores-api-docs", runtime),
+              ("ores-api-docs-operation-macros", macros),
+          ]:
+              if dep.get("git") != "https://github.com/ORESoftware/api-docs.git":
+                  raise SystemExit(f"{name} must come from the reviewed ORESoftware/api-docs repository")
+              rev = dep.get("rev", "")
+              if len(rev) != 40 or any(ch not in "0123456789abcdef" for ch in rev):
+                  raise SystemExit(f"{name} must be pinned to an exact lowercase 40-hex revision")
+
+          if runtime["rev"] != macros["rev"]:
+              raise SystemExit(
+                  "ores-api-docs and ores-api-docs-operation-macros must use one exact source revision"
+              )
+
+          lock = pathlib.Path("Cargo.lock").read_text()
+          for package in ["ores-api-docs", "ores-api-docs-operation-macros"]:
+              if f'name = "{package}"' not in lock:
+                  raise SystemExit(f"Cargo.lock does not contain {package}; regenerate it after changing Cargo.toml")
+          if runtime["rev"] not in lock:
+              raise SystemExit(
+                  f"Cargo.lock is not pinned to the api-docs revision declared by Cargo.toml: {runtime['rev']}"
+              )
+          PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
+
+      # rustfmt itself needs no dependency checkout. The repository currently
+      # has two unrelated base-tree formatting findings, so check the Rust file
+      # this PR actually changes before private credentials are required. The
+      # full workspace format gate remains below after the locked graph is
+      # available; this early check is additive, not a waiver.
+      - name: Check touched Rust formatting before private dependency access
+        run: rustfmt --edition 2021 --check src/telemetry.rs
 
       - name: Fetch locked private dependencies with least privilege
         env:
@@ -63,7 +92,7 @@ jobs:
           fi
           cargo fetch --locked
 
-      - name: Check formatting
+      - name: Check full workspace formatting
         run: cargo fmt --all -- --check
 
       - name: Lint from the fetched dependency graph
