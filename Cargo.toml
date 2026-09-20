@@ -18,6 +18,7 @@ axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
 ores-api-docs = { git = "https://github.com/ORESoftware/api-docs.git", rev = "252ec981bcbaedf5656fc02e5e581f5924d82061", package = "ores-api-docs", features = ["axum"] }
 ores-api-docs-operation-macros = { git = "https://github.com/ORESoftware/api-docs.git", rev = "252ec981bcbaedf5656fc02e5e581f5924d82061", package = "ores-api-docs-operation-macros" }
+# Keep this revision identical to canonical-orm-core's canonical-lib pin so shared quote types have one Rust crate identity.
 canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "6e833326ec2974912a4b66ebfc65f27b705abcba" }
 canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "5547c4c2f5c177be83788b3976505a5c942a991b", features = ["read-write"] }
 futures-util = "0.3.32"
