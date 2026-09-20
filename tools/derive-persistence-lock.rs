@@ -149,7 +149,10 @@ fn run(manifest_path: &Path, lock_path: &Path, output_path: &Path) -> Result<(),
     match (lib_changed, orm_changed, sea_orm_changed) {
         (false, false, false) => {
             if derived != original {
-                return Err("lock changed despite all persistence invariants already being satisfied".into());
+                return Err(
+                    "lock changed despite all persistence invariants already being satisfied"
+                        .into(),
+                );
             }
         }
         (true, true, true) => {
