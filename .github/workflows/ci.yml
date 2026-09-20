@@ -29,6 +29,19 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
+      - name: Check touched Rust formatting before private access
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt +1.95.0 --edition 2021 --check \
+            src/main.rs \
+            src/lib.rs \
+            src/contract.rs \
+            src/readiness.rs \
+            src/readiness_observation_ingest.rs \
+            src/telemetry.rs \
+            tools/derive-persistence-lock.rs
+
       - name: Require committed RPC lockfile parity before network access
         shell: bash
         run: |
