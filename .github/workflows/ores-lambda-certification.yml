@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ORESoftware/ores-stack
-          ref: 2ccb16b0eac0b36a1c50e7c1edc6bc15cd3a810c
+          ref: 68a32dbacb6717de592eca9ad269b9c5bfe9f14b
           path: .cert/ores-stack
           persist-credentials: false
           show-progress: false
