@@ -18,6 +18,7 @@ use shared_auth_client::SharedAuthClient;
 use tokio::net::TcpListener;
 use tracing::info;
 
+const ADMIN_DATABASE_URL_ENV: &str = "CANONICAL_ADMIN_DATABASE_URL";
 const AUDIT_DATABASE_URL_ENV: &str = "CANONICAL_AUDIT_DATABASE_URL";
 
 fn shutdown_grace() -> Duration {
@@ -42,18 +43,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env()?;
 
+    if std::env::var_os(ADMIN_DATABASE_URL_ENV).is_some() {
+        return Err(io::Error::other(
+            "CANONICAL_ADMIN_DATABASE_URL belongs to the isolated admin plane and is forbidden in the customer API",
+        )
+        .into());
+    }
+
     // Audit-domain persistence and quote/readiness persistence are separate
     // trust planes. The audit URL is consumed only by canonical-orm-core and no
     // raw audit driver handle is retained by the API process.
     let audit_database_url = canonical_api_server::flags::var(AUDIT_DATABASE_URL_ENV)
         .map_err(|_| io::Error::other("CANONICAL_AUDIT_DATABASE_URL is required"))?;
-    if audit_database_url.trim().is_empty() {
+    let audit_database_url = audit_database_url.trim();
+    if audit_database_url.is_empty() {
         return Err(io::Error::other("CANONICAL_AUDIT_DATABASE_URL must not be empty").into());
     }
     if config
         .database_url
         .as_deref()
-        .is_some_and(|quote_url| quote_url == audit_database_url)
+        .is_some_and(|quote_url| quote_url.trim() == audit_database_url)
     {
         return Err(io::Error::other(
             "CANONICAL_AUDIT_DATABASE_URL must not equal quote/readiness DATABASE_URL",
@@ -62,15 +71,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let dual_orm =
-        DualOrmContext::connect_read_write(&audit_database_url, CapabilityProfile::ApiReadWrite)
+        DualOrmContext::connect_read_write(audit_database_url, CapabilityProfile::ApiReadWrite)
             .await?;
     dual_orm.ping_both().await?;
     dual_orm.assert_catalog_congruence().await?;
 
     // `DATABASE_URL` remains the existing quote/readiness database on current
-    // main. Its exact quote role/schema/RLS/grant contract is checked by the
-    // readiness route. A follow-up replaces this raw pool with the opaque
-    // QuoteStore now hardened in canonical-orm-core#22.
+    // main. This raw pool is a temporary compatibility boundary; this draft is
+    // not promotable until it is replaced by canonical-orm-core's opaque
+    // QuoteStore and named observation append operation.
     let database = match config.database_url.as_deref() {
         Some(url) => Some(Database::connect(url).await?),
         None => None,
