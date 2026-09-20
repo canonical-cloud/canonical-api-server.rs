@@ -33,18 +33,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q '^name = "ores-api-docs"$' Cargo.lock || {
-            echo "::error::Cargo.lock does not contain ores-api-docs; regenerate it after changing Cargo.toml" >&2
-            exit 1
-          }
-          grep -q '^name = "ores-api-docs-operation-macros"$' Cargo.lock || {
-            echo "::error::Cargo.lock does not contain ores-api-docs-operation-macros; regenerate it after changing Cargo.toml" >&2
-            exit 1
-          }
-          grep -q 'd44140871357b324a032260bdb3d0b6c10a3c779' Cargo.lock || {
-            echo "::error::Cargo.lock is not pinned to the merged api-docs runtime d44140871357b324a032260bdb3d0b6c10a3c779" >&2
-            exit 1
-          }
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          lock = Path("Cargo.lock").read_text()
+          dependencies = manifest["dependencies"]
+          runtime_rev = dependencies["ores-api-docs"]["rev"]
+          macros_rev = dependencies["ores-api-docs-operation-macros"]["rev"]
+          assert runtime_rev == macros_rev, (
+              "ores-api-docs runtime and operation macros must use one reviewed revision"
+          )
+          needle = (
+              "git+https://github.com/ORESoftware/api-docs.git?rev="
+              f"{runtime_rev}#{runtime_rev}"
+          )
+          assert lock.count(needle) >= 2, (
+              "Cargo.lock does not contain the exact reviewed api-docs runtime/macros revision "
+              f"{runtime_rev}; regenerate the lock mechanically"
+          )
+          PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
 
       - name: Fetch locked private dependencies with least privilege
@@ -84,7 +93,7 @@ jobs:
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
           dependencies = manifest["dependencies"]
-          assert dependencies["shared-auth-client"]["rev"] == "cc57a85b276bee81ad94decc87df2f48d49cab9f"
+          assert dependencies["shared-auth-client"]["rev"] == "0b6ceb78a632ec4501dd2d7dca155d91de0e2d89"
           assert dependencies["next-loggers"]["rev"] == "ca176fb6768a9750d262a536952268625ffd3a8a"
           assert dependencies["canonical-lib"]["git"].endswith("/canonical-lib-core")
           PY
