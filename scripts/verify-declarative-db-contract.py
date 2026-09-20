@@ -14,6 +14,7 @@ ROLES = {
 }
 DPM_REVISION = "d05a7880987ddaa271fa88b52c787390ef12b899"
 ORM_REVISION = "5547c4c2f5c177be83788b3976505a5c942a991b"
+READINESS_AUTHORITY = "canonical-cloud/canonical-orm-core/sql/quote-readiness.sql"
 
 
 def fail(message: str) -> None:
@@ -45,6 +46,7 @@ if manifest.get("readiness") != {
     "runtimeRole": "canonical_cloud__quote__api_rw",
     "livenessEndpoint": "/healthz",
     "failClosed": True,
+    "authority": READINESS_AUTHORITY,
 }:
     fail("readiness manifest drift")
 if manifest["access"]["appendOnlyTables"] != [
@@ -55,7 +57,7 @@ if manifest["access"]["appendOnlyTables"] != [
     fail("append-only table manifest drift")
 
 schema_digest = hashlib.sha256(schema.encode()).hexdigest()
-if schema_digest != manifest["declarativeMigration"]["sourceSha256"]:
+if schema_digest != manifest["declarativeMigration"]["localWitness"]["sourceSha256"]:
     fail("schema digest drift")
 
 for forbidden in (
@@ -243,6 +245,7 @@ print(
             "tables": list(table_names),
             "required_constraints": list(required_constraints),
             "runtime_readiness": "/readyz",
+            "readiness_authority": READINESS_AUTHORITY,
             "observation_ingress": "/v1/readiness/sources/{sourceId}/observations",
             "runtime_storage": "canonical-orm-core::QuoteStore",
             "orm_revision": ORM_REVISION,
