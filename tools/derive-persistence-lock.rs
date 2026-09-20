@@ -145,10 +145,13 @@ fn run(manifest_path: &Path, lock_path: &Path, output_path: &Path) -> Result<(),
         return Err("derived API package still has a direct sea-orm edge".into());
     }
 
-    // The current persistence transition is intentionally constrained to three
-    // textual changes: two immutable git source lines and one direct dependency
-    // edge. This count makes the witness fail closed if either dependency graph
-    // grows or Cargo.lock structure drifts.
+    // Semantic checks above are the authority. The textual-shape check is only
+    // a second fail-closed guard against accidentally widening this derivation.
+    // The two source-line replacements each remove one old line and add one new
+    // line. Removing the direct API SeaORM edge deletes one line that is also
+    // present elsewhere in Cargo.lock, so a set-style line comparison does not
+    // count that deletion. Therefore this representation has exactly two old
+    // unique lines removed and two new unique lines added.
     let original_lines: Vec<_> = original.lines().collect();
     let derived_lines: Vec<_> = derived.lines().collect();
     let changed_or_removed = original_lines
@@ -159,7 +162,7 @@ fn run(manifest_path: &Path, lock_path: &Path, output_path: &Path) -> Result<(),
         .iter()
         .filter(|line| !original_lines.contains(line))
         .count();
-    if changed_or_removed != 3 || changed_or_added != 2 {
+    if changed_or_removed != 2 || changed_or_added != 2 {
         return Err(format!(
             "unexpected lock transition shape: removed/changed={changed_or_removed}, added/changed={changed_or_added}"
         ));
