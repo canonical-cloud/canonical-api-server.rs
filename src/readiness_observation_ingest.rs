@@ -1,13 +1,13 @@
-//! Signed, append-only readiness observations reported by customer systems.
+//! Signed readiness observations reported by customer systems.
 //!
-//! Transport verification proves origin and exact-body integrity only. Every
-//! accepted observation starts as `unreviewed`; it is not an audit opinion,
-//! attestation, certification, authorization, or legal conclusion.
+//! This module owns transport authentication and admitted wire validation only.
+//! Durable storage, stream serialization, idempotency and record chaining are
+//! owned by canonical-orm-core's opaque QuoteStore.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -16,11 +16,10 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use hmac::{Hmac, Mac};
-use sea_orm::{
-    ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, DbErr, Statement,
-    TransactionTrait,
+use canonical_orm_core::{
+    QuoteStore, ReadinessObservationAppend, ReadinessObservationStoreError,
 };
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -32,7 +31,6 @@ pub const KEYS_ENV: &str = "CANONICAL_READINESS_INGEST_KEYS_JSON";
 const EVENT_SPEC: &str = "canonical.readiness.observation.v1";
 const RECEIPT_SPEC: &str = "canonical.readiness.observation.receipt.v1";
 const PROBLEM_SPEC: &str = "canonical.readiness.observation.problem.v1";
-const RECORD_DOMAIN: &[u8] = b"canonical.readiness.observation.record.v1\n";
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const MAX_CLOCK_SKEW_SECONDS: i64 = 300;
 const MAX_ASSERTIONS: usize = 256;
@@ -41,53 +39,43 @@ const MAX_IDENTIFIER_BYTES: usize = 128;
 const MAX_STATEMENT_BYTES: usize = 2_048;
 const MAX_LOCATOR_BYTES: usize = 2_048;
 const MAX_CONTENT_TYPE_BYTES: usize = 128;
-const MEMORY_CAPACITY: usize = 10_000;
-const ZERO_RECORD_DIGEST: &str =
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
 pub struct ObservationService {
-    database: Option<DatabaseConnection>,
+    store: Option<QuoteStore>,
     keys: Arc<KeyRing>,
-    memory: Arc<Mutex<MemoryStore>>,
-    allow_memory: bool,
 }
 
 impl fmt::Debug for ObservationService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ObservationService")
-            .field("database_configured", &self.database.is_some())
+            .field("database_configured", &self.store.is_some())
             .field("configured_sources", &self.keys.by_source.len())
-            .field("allow_memory", &self.allow_memory)
             .finish()
     }
 }
 
 impl ObservationService {
-    pub fn from_env(database: Option<DatabaseConnection>) -> Result<Self, BuildError> {
+    pub fn from_env(store: Option<QuoteStore>) -> Result<Self, BuildError> {
         let keys = match env::var(KEYS_ENV) {
             Ok(document) => KeyRing::parse(&document)?,
             Err(env::VarError::NotPresent) => KeyRing::default(),
             Err(env::VarError::NotUnicode(_)) => return Err(BuildError::NonUnicodeKeyDocument),
         };
         Ok(Self {
-            database,
+            store,
             keys: Arc::new(keys),
-            memory: Arc::new(Mutex::new(MemoryStore::default())),
-            allow_memory: false,
         })
     }
 
     #[cfg(test)]
     fn with_key_document(document: &str) -> Result<Self, BuildError> {
         Ok(Self {
-            database: None,
+            store: None,
             keys: Arc::new(KeyRing::parse(document)?),
-            memory: Arc::new(Mutex::new(MemoryStore::default())),
-            allow_memory: true,
         })
     }
 
@@ -115,27 +103,30 @@ impl ObservationService {
 
         let transport = self.keys.verify(headers, body, &event, now)?;
         let payload_sha256 = sha256_label(body);
-        let candidate = ReceiptIdentity {
-            receipt_id: format!("rcpt_{}", Uuid::new_v4().simple()),
-            received_at: format_timestamp(now)?,
-        };
-        let stored = match &self.database {
-            Some(database) => {
-                store_database(
-                    database,
-                    &transport,
-                    &event,
-                    &payload_sha256,
-                    body.len(),
-                    &candidate,
-                )
-                .await?
-            }
-            None if self.allow_memory => {
-                self.store_memory(&transport, &event, &payload_sha256, candidate)?
-            }
-            None => return Err(IngestError::StorageUnavailable),
-        };
+        let receipt_id = format!("rcpt_{}", Uuid::new_v4().simple());
+        let received_at = format_timestamp(now)?;
+        let event_json: JsonValue =
+            serde_json::to_value(&event).map_err(|_| IngestError::Internal)?;
+        let raw_body_octets = i64::try_from(body.len()).map_err(|_| IngestError::BodyTooLarge)?;
+
+        let store = self.store.as_ref().ok_or(IngestError::StorageUnavailable)?;
+        let stored = store
+            .append_readiness_observation(&ReadinessObservationAppend {
+                owner_subject: transport.owner_subject,
+                source_id: event.source_id.clone(),
+                event_id: event.event_id.clone(),
+                source_sequence: event.source_sequence,
+                organization: event.organization.clone(),
+                observed_at: event.observed_at.clone(),
+                payload_sha256: payload_sha256.clone(),
+                receipt_id,
+                key_id: transport.key_id,
+                event_json,
+                raw_body_octets,
+                received_at,
+            })
+            .await
+            .map_err(map_store_error)?;
 
         Ok(ObservationReceipt {
             spec_version: RECEIPT_SPEC,
@@ -155,81 +146,18 @@ impl ObservationService {
             substantive_review: "unreviewed",
         })
     }
+}
 
-    fn store_memory(
-        &self,
-        transport: &VerifiedTransport,
-        event: &ObservationEvent,
-        payload_sha256: &str,
-        candidate: ReceiptIdentity,
-    ) -> Result<StorageOutcome, IngestError> {
-        let mut memory = self
-            .memory
-            .lock()
-            .map_err(|_| IngestError::StorageUnavailable)?;
-        let event_key = (
-            transport.owner_subject.clone(),
-            event.source_id.clone(),
-            event.event_id.clone(),
-        );
-        if let Some(existing) = memory.events.get(&event_key) {
-            return if existing.payload_sha256 == payload_sha256
-                && existing.source_sequence == event.source_sequence
-            {
-                Ok(StorageOutcome {
-                    duplicate: true,
-                    receipt_id: existing.receipt_id.clone(),
-                    received_at: existing.received_at.clone(),
-                })
-            } else {
-                Err(IngestError::EventConflict)
-            };
-        }
-
-        let stream_key = (transport.owner_subject.clone(), event.source_id.clone());
-        let (prior_sequence, prior_record_sha256) = memory
-            .streams
-            .get(&stream_key)
-            .map(|cursor| (cursor.source_sequence, cursor.record_sha256.as_str()))
-            .unwrap_or((0, ZERO_RECORD_DIGEST));
-        let expected = prior_sequence
-            .checked_add(1)
-            .ok_or(IngestError::SequenceConflict)?;
-        if event.source_sequence != expected {
-            return Err(IngestError::SequenceConflict);
-        }
-        if memory.order.len() >= MEMORY_CAPACITY {
-            return Err(IngestError::StorageUnavailable);
-        }
-
-        let record_sha256 = record_digest(
-            prior_record_sha256,
-            payload_sha256,
-            &event.event_id,
-            event.source_sequence,
-        );
-        memory.events.insert(
-            event_key.clone(),
-            MemoryRecord {
-                source_sequence: event.source_sequence,
-                payload_sha256: payload_sha256.into(),
-                receipt_id: candidate.receipt_id.clone(),
-                received_at: candidate.received_at.clone(),
-            },
-        );
-        memory.streams.insert(
-            stream_key,
-            StreamCursor {
-                source_sequence: event.source_sequence,
-                record_sha256,
-            },
-        );
-        memory.order.push_back(event_key);
-        Ok(StorageOutcome {
-            duplicate: false,
-            receipt_id: candidate.receipt_id,
-            received_at: candidate.received_at,
-        })
+fn map_store_error(error: ReadinessObservationStoreError) -> IngestError {
+    match error {
+        ReadinessObservationStoreError::EventConflict => IngestError::EventConflict,
+        ReadinessObservationStoreError::SequenceConflict => IngestError::SequenceConflict,
+        // Every durable input is constructed only after the stricter transport
+        // validator below. If the ORM rejects it, the API and persistence
+        // contracts have drifted; do not misreport that server defect as a
+        // customer 400.
+        ReadinessObservationStoreError::InvalidInput => IngestError::Internal,
+        ReadinessObservationStoreError::Database(_) => IngestError::StorageUnavailable,
     }
 }
 
@@ -274,41 +202,15 @@ async fn observation_security_headers(mut response: Response) -> Response {
         HeaderValue::from_static("camera=(), geolocation=(), microphone=()"),
     );
     headers.insert(
+        "strict-transport-security",
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    headers.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
     response
-}
-
-#[derive(Default)]
-struct MemoryStore {
-    events: HashMap<(String, String, String), MemoryRecord>,
-    streams: HashMap<(String, String), StreamCursor>,
-    order: VecDeque<(String, String, String)>,
-}
-
-struct MemoryRecord {
-    source_sequence: i64,
-    payload_sha256: String,
-    receipt_id: String,
-    received_at: String,
-}
-
-struct StreamCursor {
-    source_sequence: i64,
-    record_sha256: String,
-}
-
-struct ReceiptIdentity {
-    receipt_id: String,
-    received_at: String,
-}
-
-struct StorageOutcome {
-    duplicate: bool,
-    receipt_id: String,
-    received_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -612,177 +514,6 @@ fn validate_locator(locator: &str) -> Result<(), IngestError> {
     }
 }
 
-async fn store_database(
-    database: &DatabaseConnection,
-    transport: &VerifiedTransport,
-    event: &ObservationEvent,
-    payload_sha256: &str,
-    body_len: usize,
-    candidate: &ReceiptIdentity,
-) -> Result<StorageOutcome, IngestError> {
-    if database.get_database_backend() != DatabaseBackend::Postgres {
-        return Err(IngestError::StorageUnavailable);
-    }
-    let transaction = database.begin().await?;
-    set_subject(&transaction, &transport.owner_subject).await?;
-    transaction
-        .query_one_raw(Statement::from_sql_and_values(
-            DatabaseBackend::Postgres,
-            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-            [format!(
-                "readiness\\0{}\\0{}",
-                transport.owner_subject, event.source_id
-            )
-            .into()],
-        ))
-        .await?;
-
-    let existing = transaction
-        .query_one_raw(Statement::from_sql_and_values(
-            DatabaseBackend::Postgres,
-            r#"
-            SELECT
-                payload_sha256,
-                source_sequence,
-                receipt_id,
-                to_char(
-                    received_at AT TIME ZONE 'UTC',
-                    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
-                ) AS received_at_text
-            FROM canonical_readiness_observation
-            WHERE owner_subject = $1
-              AND source_id = $2
-              AND event_id = $3
-            "#,
-            [
-                transport.owner_subject.clone().into(),
-                event.source_id.clone().into(),
-                event.event_id.clone().into(),
-            ],
-        ))
-        .await?;
-    if let Some(row) = existing {
-        let stored_payload: String = row.try_get("", "payload_sha256")?;
-        let stored_sequence: i64 = row.try_get("", "source_sequence")?;
-        if stored_payload == payload_sha256 && stored_sequence == event.source_sequence {
-            let outcome = StorageOutcome {
-                duplicate: true,
-                receipt_id: row.try_get("", "receipt_id")?,
-                received_at: row.try_get("", "received_at_text")?,
-            };
-            transaction.commit().await?;
-            return Ok(outcome);
-        }
-        transaction.rollback().await?;
-        return Err(IngestError::EventConflict);
-    }
-
-    let cursor = transaction
-        .query_one_raw(Statement::from_sql_and_values(
-            DatabaseBackend::Postgres,
-            r#"
-            SELECT source_sequence, record_sha256
-            FROM canonical_readiness_observation
-            WHERE owner_subject = $1
-              AND source_id = $2
-            ORDER BY source_sequence DESC
-            LIMIT 1
-            "#,
-            [
-                transport.owner_subject.clone().into(),
-                event.source_id.clone().into(),
-            ],
-        ))
-        .await?;
-    let (prior_sequence, prior_record_sha256) = match cursor {
-        Some(row) => (
-            row.try_get::<i64>("", "source_sequence")?,
-            row.try_get::<String>("", "record_sha256")?,
-        ),
-        None => (0, ZERO_RECORD_DIGEST.to_owned()),
-    };
-    let expected = prior_sequence
-        .checked_add(1)
-        .ok_or(IngestError::SequenceConflict)?;
-    if event.source_sequence != expected {
-        transaction.rollback().await?;
-        return Err(IngestError::SequenceConflict);
-    }
-
-    let event_json: JsonValue = serde_json::to_value(event).map_err(|_| IngestError::Internal)?;
-    let record_sha256 = record_digest(
-        &prior_record_sha256,
-        payload_sha256,
-        &event.event_id,
-        event.source_sequence,
-    );
-    transaction
-        .execute_raw(Statement::from_sql_and_values(
-            DatabaseBackend::Postgres,
-            r#"
-            INSERT INTO canonical_readiness_observation (
-                owner_subject,
-                source_id,
-                event_id,
-                source_sequence,
-                organization,
-                observed_at,
-                payload_sha256,
-                prior_record_sha256,
-                record_sha256,
-                receipt_id,
-                key_id,
-                event_json,
-                raw_body_octets,
-                transport_verification,
-                substantive_review,
-                received_at
-            )
-            VALUES (
-                $1, $2, $3, $4, $5, CAST($6 AS timestamptz), $7, $8, $9,
-                $10, $11, $12, $13, 'signature-valid', 'unreviewed',
-                CAST($14 AS timestamptz)
-            )
-            "#,
-            [
-                transport.owner_subject.clone().into(),
-                event.source_id.clone().into(),
-                event.event_id.clone().into(),
-                event.source_sequence.into(),
-                event.organization.clone().into(),
-                event.observed_at.clone().into(),
-                payload_sha256.to_owned().into(),
-                prior_record_sha256.into(),
-                record_sha256.into(),
-                candidate.receipt_id.clone().into(),
-                transport.key_id.clone().into(),
-                event_json.into(),
-                i64::try_from(body_len)
-                    .map_err(|_| IngestError::BodyTooLarge)?
-                    .into(),
-                candidate.received_at.clone().into(),
-            ],
-        ))
-        .await?;
-    transaction.commit().await?;
-    Ok(StorageOutcome {
-        duplicate: false,
-        receipt_id: candidate.receipt_id.clone(),
-        received_at: candidate.received_at.clone(),
-    })
-}
-
-async fn set_subject(transaction: &DatabaseTransaction, subject: &str) -> Result<(), IngestError> {
-    transaction
-        .execute_raw(Statement::from_sql_and_values(
-            DatabaseBackend::Postgres,
-            "SELECT set_config('app.current_subject', $1, true)",
-            [subject.to_owned().into()],
-        ))
-        .await?;
-    Ok(())
-}
-
 fn validate_content_type(headers: &HeaderMap) -> Result<(), IngestError> {
     let value = headers
         .get(axum::http::header::CONTENT_TYPE)
@@ -867,22 +598,6 @@ fn sha256_label(bytes: &[u8]) -> String {
     format!("sha256:{}", hex_lower(&Sha256::digest(bytes)))
 }
 
-fn record_digest(
-    prior_record_sha256: &str,
-    payload_sha256: &str,
-    event_id: &str,
-    source_sequence: i64,
-) -> String {
-    let sequence = source_sequence.to_string();
-    let mut digest = Sha256::new();
-    digest.update(RECORD_DOMAIN);
-    for value in [prior_record_sha256, payload_sha256, event_id, &sequence] {
-        digest.update(value.as_bytes());
-        digest.update(b"\n");
-    }
-    format!("sha256:{}", hex_lower(&digest.finalize()))
-}
-
 fn hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -923,8 +638,6 @@ enum IngestError {
     StorageUnavailable,
     #[error("internal readiness ingest error")]
     Internal,
-    #[error("readiness observation database is unavailable")]
-    Database(#[from] DbErr),
 }
 
 struct IngestProblem {
@@ -965,7 +678,7 @@ impl From<IngestError> for IngestProblem {
                 "sequence-conflict",
                 "source sequence must be the next contiguous value",
             ),
-            IngestError::StorageUnavailable | IngestError::Database(_) => (
+            IngestError::StorageUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "storage-unavailable",
                 "readiness observation storage is unavailable",
@@ -1092,129 +805,27 @@ mod tests {
     }
 
     #[test]
-    fn record_digest_chains_prior_and_payload_state() {
-        let first = record_digest(
-            ZERO_RECORD_DIGEST,
-            &format!("sha256:{}", "a".repeat(64)),
-            "event.test.00000001",
-            1,
+    fn key_documents_reject_unknown_fields_and_weak_secrets() {
+        let unknown = format!(
+            r#"{{"keys":[{{"keyId":"key.customer-ci","sourceId":"source.customer-ci","organization":"org:example","ownerSubject":"org:example","secret":"{SECRET}","extra":true}}]}}"#
         );
-        let changed_prior = record_digest(
-            &format!("sha256:{}", "b".repeat(64)),
-            &format!("sha256:{}", "a".repeat(64)),
-            "event.test.00000001",
-            1,
-        );
-        assert!(valid_sha256(&first));
-        assert_ne!(first, changed_prior);
+        assert!(matches!(
+            KeyRing::parse(&unknown),
+            Err(BuildError::InvalidKeyDocument)
+        ));
+        let weak = r#"{"keys":[{"keyId":"key.customer-ci","sourceId":"source.customer-ci","organization":"org:example","ownerSubject":"org:example","secret":"short"}]}"#;
+        assert!(matches!(KeyRing::parse(weak), Err(BuildError::InvalidSecret)));
     }
 
     #[tokio::test]
-    async fn exact_replay_returns_the_original_receipt() {
-        let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
+    async fn valid_signed_event_requires_durable_store() {
         let service = service();
-        let candidate = event(1);
-        let body = serde_json::to_vec(&candidate).unwrap();
-        let headers = signed_headers(&body, &candidate.event_id, now.unix_timestamp());
-        let first = service
-            .ingest(&candidate.source_id, &headers, &body, now)
-            .await
-            .unwrap();
-        let second = service
-            .ingest(&candidate.source_id, &headers, &body, now)
-            .await
-            .unwrap();
-        assert!(!first.duplicate);
-        assert!(second.duplicate);
-        assert_eq!(first.receipt_id, second.receipt_id);
-        assert_eq!(first.received_at, second.received_at);
-    }
-
-    #[tokio::test]
-    async fn event_mutation_conflicts() {
         let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
-        let service = service();
-        let candidate = event(1);
-        let body = serde_json::to_vec(&candidate).unwrap();
-        let headers = signed_headers(&body, &candidate.event_id, now.unix_timestamp());
-        service
-            .ingest(&candidate.source_id, &headers, &body, now)
-            .await
-            .unwrap();
-
-        let mut altered = candidate;
-        altered.assertions[0].reported_status = ReportedStatus::Unknown;
-        let altered_body = serde_json::to_vec(&altered).unwrap();
-        let altered_headers =
-            signed_headers(&altered_body, &altered.event_id, now.unix_timestamp());
+        let event = event(1);
+        let body = serde_json::to_vec(&event).unwrap();
+        let headers = signed_headers(&body, &event.event_id, now.unix_timestamp());
         assert!(matches!(
-            service
-                .ingest(&altered.source_id, &altered_headers, &altered_body, now)
-                .await,
-            Err(IngestError::EventConflict)
-        ));
-    }
-
-    #[tokio::test]
-    async fn sequence_must_begin_at_one_and_remain_contiguous() {
-        let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
-        let service = service();
-        let skipped_first = event(2);
-        let body = serde_json::to_vec(&skipped_first).unwrap();
-        let headers = signed_headers(&body, &skipped_first.event_id, now.unix_timestamp());
-        assert!(matches!(
-            service
-                .ingest(&skipped_first.source_id, &headers, &body, now)
-                .await,
-            Err(IngestError::SequenceConflict)
-        ));
-
-        let first = event(1);
-        let body = serde_json::to_vec(&first).unwrap();
-        let headers = signed_headers(&body, &first.event_id, now.unix_timestamp());
-        service
-            .ingest(&first.source_id, &headers, &body, now)
-            .await
-            .unwrap();
-
-        let gap = event(3);
-        let body = serde_json::to_vec(&gap).unwrap();
-        let headers = signed_headers(&body, &gap.event_id, now.unix_timestamp());
-        assert!(matches!(
-            service.ingest(&gap.source_id, &headers, &body, now).await,
-            Err(IngestError::SequenceConflict)
-        ));
-    }
-
-    #[tokio::test]
-    async fn stale_signature_is_rejected_before_storage() {
-        let now = parse_timestamp("2026-09-09T05:10:01Z").unwrap();
-        let candidate = event(1);
-        let body = serde_json::to_vec(&candidate).unwrap();
-        let headers = signed_headers(&body, &candidate.event_id, 1_788_927_600);
-        assert!(matches!(
-            service()
-                .ingest(&candidate.source_id, &headers, &body, now)
-                .await,
-            Err(IngestError::StaleSignature)
-        ));
-    }
-
-    #[tokio::test]
-    async fn production_service_fails_closed_without_durable_storage() {
-        let now = parse_timestamp("2026-09-09T05:00:00Z").unwrap();
-        let document = format!(
-            r#"{{"keys":[{{"keyId":"key.customer-ci","sourceId":"source.customer-ci","organization":"org:example","ownerSubject":"org:example","secret":"{SECRET}"}}]}}"#
-        );
-        let mut service = ObservationService::with_key_document(&document).unwrap();
-        service.allow_memory = false;
-        let candidate = event(1);
-        let body = serde_json::to_vec(&candidate).unwrap();
-        let headers = signed_headers(&body, &candidate.event_id, now.unix_timestamp());
-        assert!(matches!(
-            service
-                .ingest(&candidate.source_id, &headers, &body, now)
-                .await,
+            service.ingest(&event.source_id, &headers, &body, now).await,
             Err(IngestError::StorageUnavailable)
         ));
     }
