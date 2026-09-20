@@ -18,14 +18,13 @@ axum = { version = "0.8.9", features = ["macros", "ws"] }
 axum-server = "0.8.0"
 ores-api-docs = { git = "https://github.com/ORESoftware/api-docs.git", rev = "252ec981bcbaedf5656fc02e5e581f5924d82061", package = "ores-api-docs", features = ["axum"] }
 ores-api-docs-operation-macros = { git = "https://github.com/ORESoftware/api-docs.git", rev = "252ec981bcbaedf5656fc02e5e581f5924d82061", package = "ores-api-docs-operation-macros" }
-canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "54ce24670694b1f920e4ab69043378db24fd7296" }
-canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "954fd9811b9c6db1acf15d3a282e65395e347b5a", features = ["read-write"] }
+canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "6e833326ec2974912a4b66ebfc65f27b705abcba" }
+canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "5547c4c2f5c177be83788b3976505a5c942a991b", features = ["read-write"] }
 futures-util = "0.3.32"
 flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-env", rev = "d7bad9ea7dfc657653368237e08903514cdca1ec" }
 hmac = "0.12.1"
 next-loggers = { git = "https://github.com/ores-otel/ores.otel.log", rev = "ca176fb6768a9750d262a536952268625ffd3a8a", package = "oresoftware-next-loggers" }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
-sea-orm = { version = "2.0.0", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-json", "with-uuid"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
 sha2 = "0.10.9"
