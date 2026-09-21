@@ -57,14 +57,25 @@ jobs:
                   "ores-api-docs and ores-api-docs-operation-macros must use one exact source revision"
               )
 
-          lock = pathlib.Path("Cargo.lock").read_text()
-          for package in ["ores-api-docs", "ores-api-docs-operation-macros"]:
-              if f'name = "{package}"' not in lock:
-                  raise SystemExit(f"Cargo.lock does not contain {package}; regenerate it after changing Cargo.toml")
-          if runtime["rev"] not in lock:
-              raise SystemExit(
-                  f"Cargo.lock is not pinned to the api-docs revision declared by Cargo.toml: {runtime['rev']}"
-              )
+          lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text())
+          locked = lock.get("package", [])
+          for name, dep in [
+              ("ores-api-docs", runtime),
+              ("ores-api-docs-operation-macros", macros),
+          ]:
+              package = dep.get("package", name)
+              matches = [entry for entry in locked if entry.get("name") == package]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"Cargo.lock must contain exactly one {package} package entry; found {len(matches)}"
+                  )
+              rev = dep["rev"]
+              expected_source = f"git+{dep['git']}?rev={rev}#{rev}"
+              source = matches[0].get("source", "")
+              if source != expected_source:
+                  raise SystemExit(
+                      f"Cargo.lock {package} source does not match Cargo.toml rev {rev}: {source!r}"
+                  )
           PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
 
