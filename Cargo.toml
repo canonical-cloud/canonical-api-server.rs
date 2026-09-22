@@ -20,7 +20,7 @@ ores-api-docs = { git = "https://github.com/ORESoftware/api-docs.git", rev = "25
 ores-api-docs-operation-macros = { git = "https://github.com/ORESoftware/api-docs.git", rev = "252ec981bcbaedf5656fc02e5e581f5924d82061", package = "ores-api-docs-operation-macros" }
 # Keep this revision identical to canonical-orm-core's canonical-lib pin so shared quote types have one Rust crate identity.
 canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "6e833326ec2974912a4b66ebfc65f27b705abcba" }
-canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "5547c4c2f5c177be83788b3976505a5c942a991b", features = ["read-write"] }
+canonical-orm-core = { git = "https://github.com/canonical-cloud/canonical-orm-core", rev = "ad04984b227b0f2bcca1d8dc6ee858bd58a46f94", features = ["read-write"] }
 futures-util = "0.3.32"
 flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-env", rev = "d7bad9ea7dfc657653368237e08903514cdca1ec" }
 hmac = "0.12.1"
