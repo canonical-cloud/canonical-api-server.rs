@@ -31,18 +31,19 @@ jobs:
           from pathlib import Path
           old='5547c4c2f5c177be83788b3976505a5c942a991b'
           new='ad04984b227b0f2bcca1d8dc6ee858bd58a46f94'
-          for name in ('Cargo.toml','Cargo.lock'):
+          expected = {'Cargo.toml': 1, 'Cargo.lock': 2}
+          for name, count in expected.items():
               p=Path(name)
               s=p.read_text()
               n=s.count(old)
-              if n != 1:
-                  raise SystemExit(f'{name}: expected exactly one old ORM SHA, found {n}')
+              if n != count:
+                  raise SystemExit(f'{name}: expected exactly {count} old ORM SHA occurrence(s), found {n}')
               p.write_text(s.replace(old,new))
           PY
           git diff --check
           test "$(git diff --name-only | sort | tr '\n' ' ')" = "Cargo.lock Cargo.toml "
-          grep -F "$new" Cargo.toml
-          grep -F "$new" Cargo.lock
+          test "$(grep -Fo "$new" Cargo.toml | wc -l)" -eq 1
+          test "$(grep -Fo "$new" Cargo.lock | wc -l)" -eq 2
           ! grep -F "$old" Cargo.toml
           ! grep -F "$old" Cargo.lock
           git config user.name 'github-actions[bot]'
