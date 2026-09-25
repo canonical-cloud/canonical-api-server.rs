@@ -1,0 +1,11 @@
+schema = 2
+[tasks.bootstrap]
+run = ["sh conformance/check-routing-contracts.sh --structural-only"]
+[tasks.contracts]
+run = ["sh conformance/check-routing-contracts.sh --full"]
+[tasks.precommit]
+run = ["sh .githooks/pre-commit"]
+[tasks.prepush]
+run = ["sh .githooks/pre-push"]
+[tasks.test]
+run = ["sh conformance/check-routing-contracts.sh --full"]

@@ -1,14 +1,8 @@
-#!/bin/sh
-# Installed by ridl. Runs the route-map gate before a push.
-#
-# The gate validates every route map, checks the handlers against it, and fails
-# if the generated clients no longer match. Regenerate with `ridl generate`
-# rather than editing generated files.
-set -e
-root=$(git rev-parse --show-toplevel)
-script="$root/scripts/check-route-sync.py"
-if [ ! -f "$script" ]; then
-  echo "route-map gate: $script is missing; skipping" >&2
-  exit 0
-fi
-exec python3 "$script" --root "$root"
+#!/usr/bin/env sh
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+command -v zed >/dev/null 2>&1 || { echo 'zed required for pre-push routing admission' >&2; exit 1; }
+pack="${TMPDIR:-/tmp}/canonical-api-pack-$$"; trap 'rm -rf "$pack"' EXIT INT TERM
+zed validate; zed install; test -f .zpkg.lock; zed validate --require-lock; zed install --frozen; zed build; zed run test; mkdir -p "$pack"; zed pack --out "$pack"
+git ls-files --error-unmatch .zpkg.lock >/dev/null 2>&1 || { echo '.zpkg.lock must be committed' >&2; exit 1; }
+git diff --exit-code -- .zpkg.lock
