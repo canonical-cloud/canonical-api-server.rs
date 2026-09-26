@@ -81,8 +81,26 @@ pub struct Config {
     pub webhook_secret: Option<String>,
 }
 
+const FORBIDDEN_API_PROCESS_CREDENTIALS: &[&str] = &[
+    "MIGRATION_DATABASE_URL",
+    "CANONICAL_ADMIN_DATABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+];
+
+fn validate_process_role_credentials(
+    mut is_present: impl FnMut(&str) -> bool,
+) -> Result<(), ConfigError> {
+    for &name in FORBIDDEN_API_PROCESS_CREDENTIALS {
+        if is_present(name) {
+            return Err(ConfigError::ForbiddenProcessCredential(name));
+        }
+    }
+    Ok(())
+}
+
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
+        validate_process_role_credentials(|name| flags::var(name).is_ok())?;
         let internal_auth_token = flags::var("CANONICAL_INTERNAL_AUTH_TOKEN")
             .map_err(|_| ConfigError::MissingInternalAuthToken)?;
         if internal_auth_token.trim().len() < 32 {
@@ -185,6 +203,7 @@ impl fmt::Debug for Config {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfigError {
+    ForbiddenProcessCredential(&'static str),
     InvalidGeminiModel,
     IncompleteWebhookConfiguration,
     IncompleteSharedAuthConfiguration,
@@ -198,6 +217,10 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ForbiddenProcessCredential(name) => write!(
+                formatter,
+                "{name} is forbidden in the customer API process"
+            ),
             Self::InvalidGeminiModel => formatter.write_str(
                 "GEMINI_MODEL must contain only ASCII letters, digits, '.', '-', or '_'",
             ),
@@ -1572,8 +1595,9 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_router, parse_quote_request, AppState, QuoteAdmission, APPLICATION_CONTEXT_MARKDOWN,
-        DEFAULT_GEMINI_MODEL, MAX_REQUEST_BODY_BYTES, QUOTE_SUBMISSIONS_PER_WINDOW,
+        build_router, parse_quote_request, validate_process_role_credentials, AppState, ConfigError,
+        QuoteAdmission, APPLICATION_CONTEXT_MARKDOWN, DEFAULT_GEMINI_MODEL,
+        FORBIDDEN_API_PROCESS_CREDENTIALS, MAX_REQUEST_BODY_BYTES, QUOTE_SUBMISSIONS_PER_WINDOW,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -1644,6 +1668,63 @@ mod tests {
         assert_eq!(body["sharedAuthConfigured"], false);
         assert_eq!(body["webhookConfigured"], false);
         assert_eq!(body["readinessFrameworks"], 15);
+    }
+
+    #[test]
+    fn api_process_rejects_migration_admin_and_service_role_credentials() {
+        for &forbidden in FORBIDDEN_API_PROCESS_CREDENTIALS {
+            assert_eq!(
+                validate_process_role_credentials(|name| name == forbidden),
+                Err(ConfigError::ForbiddenProcessCredential(forbidden))
+            );
+        }
+        assert_eq!(validate_process_role_credentials(|_| false), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn quote_mutation_requires_idempotency_key() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .body(Body::from(valid_payload().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn quote_mutation_rejects_untrusted_tenant_subject() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "../../other-tenant")
+                    .header("idempotency-key", "quote:tenant-boundary")
+                    .body(Body::from(valid_payload().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn quote_mutation_rejects_invalid_payload_before_persistence() {
+        let response = app()
+            .oneshot(request(json!({}), "quote:invalid-payload"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
