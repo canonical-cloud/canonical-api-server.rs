@@ -533,6 +533,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn graceful_drain_stops_new_admissions_before_forcing_existing_work() {
+        let (address, entered, events, task) = active_server(Duration::from_secs(2)).await;
+        let _stream = open_slow_request(address, entered).await;
+
+        events.send(Event::SigTerm).unwrap();
+
+        let mut listener_closed = false;
+        for _ in 0..40 {
+            if TcpStream::connect(address).await.is_err() {
+                listener_closed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(listener_closed, "listener continued admitting new connections during drain");
+
+        events.send(Event::SigTerm).unwrap();
+        let outcome = timeout(Duration::from_secs(1), task)
+            .await
+            .expect("server did not force close after second signal")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, Outcome::Forced(Event::SigTerm));
+    }
+
+    #[tokio::test]
     async fn deadline_force_closes_active_connection() {
         let (address, entered, events, task) = active_server(Duration::from_millis(20)).await;
         let _stream = open_slow_request(address, entered).await;
