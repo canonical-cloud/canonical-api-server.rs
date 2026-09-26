@@ -312,6 +312,8 @@ fn help_table() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use super::*;
 
     #[test]
