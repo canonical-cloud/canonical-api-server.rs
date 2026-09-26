@@ -1,0 +1,29 @@
+{
+  "schema": "ores.stack.startup-precedence/v1",
+  "precedenceHighestToLowest": [
+    "cli-flags",
+    "process-environment",
+    "encrypted-config-projection",
+    "contract-defaults"
+  ],
+  "parser": "flags-2-env",
+  "configProjection": {
+    "selector": "CANONICAL_CONFIG / --config",
+    "format": "flat TOML using audited environment-style names",
+    "maxBytes": 65536,
+    "filesystem": "regular non-symlink file",
+    "unknownFields": "reject",
+    "nestedValues": "reject"
+  },
+  "failClosedPolicy": {
+    "unknownCliOptions": "reject",
+    "unknownConfigFields": "reject",
+    "contradictoryPairedSettings": "reject",
+    "missingRequiredSecrets": "reject",
+    "forbiddenProcessCredentials": [
+      "MIGRATION_DATABASE_URL",
+      "CANONICAL_ADMIN_DATABASE_URL",
+      "SUPABASE_SERVICE_ROLE_KEY"
+    ]
+  }
+}
