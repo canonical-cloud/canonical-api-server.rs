@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -55,6 +55,10 @@ const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_MARKDOWN_CONTEXT_BYTES: usize = 262_144;
 const MAX_CONTEXT_RECORD_BYTES: usize = 262_144;
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_HEADER_BYTES: usize = 32 * 1024;
+const MAX_REQUEST_HEADER_COUNT: usize = 100;
+const MAX_REQUEST_DURATION: Duration = Duration::from_secs(90);
+const REQUEST_DEADLINE_HEADER: &str = "x-ores-deadline-ms";
 pub const SHARED_AUTH_MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const SCOPE_QUOTES_READ: &str = "quotes:read";
 const SCOPE_QUOTES_WRITE: &str = "quotes:write";
@@ -448,6 +452,78 @@ enum MemoryOperation {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+struct RequestDeadline {
+    expires_at: tokio::time::Instant,
+}
+
+fn request_duration(headers: &HeaderMap) -> Result<Duration, StatusCode> {
+    let Some(value) = headers.get(REQUEST_DEADLINE_HEADER) else {
+        return Ok(MAX_REQUEST_DURATION);
+    };
+    let value = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let milliseconds = value
+        .parse::<u64>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if milliseconds == 0 {
+        return Err(StatusCode::REQUEST_TIMEOUT);
+    }
+    Ok(Duration::from_millis(milliseconds).min(MAX_REQUEST_DURATION))
+}
+
+fn request_headers_within_budget(headers: &HeaderMap) -> bool {
+    if headers.len() > MAX_REQUEST_HEADER_COUNT {
+        return false;
+    }
+    let mut total = 0_usize;
+    for (name, value) in headers {
+        total = total
+            .saturating_add(name.as_str().len())
+            .saturating_add(value.as_bytes().len());
+        if total > MAX_REQUEST_HEADER_BYTES {
+            return false;
+        }
+    }
+    true
+}
+
+fn request_encoding_supported(headers: &HeaderMap) -> bool {
+    let values = headers.get_all(header::CONTENT_ENCODING);
+    values.iter().all(|value| {
+        value
+            .to_str()
+            .ok()
+            .is_some_and(|value| value.eq_ignore_ascii_case("identity"))
+    })
+}
+
+async fn enforce_request_envelope(
+    mut request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    if !request_headers_within_budget(request.headers()) {
+        return StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.into_response();
+    }
+    if !request_encoding_supported(request.headers()) {
+        // Request decompression is intentionally not enabled. Reject encoded
+        // bodies rather than accepting a compressed-size check that can expand
+        // beyond the admitted body budget later.
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
+    let duration = match request_duration(request.headers()) {
+        Ok(duration) => duration,
+        Err(status) => return status.into_response(),
+    };
+    let deadline = RequestDeadline {
+        expires_at: tokio::time::Instant::now() + duration,
+    };
+    request.extensions_mut().insert(deadline);
+    match tokio::time::timeout_at(deadline.expires_at, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    }
+}
+
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     Router::new()
@@ -495,6 +571,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(middleware::from_fn(enforce_request_envelope))
         .layer(middleware::map_response(security_headers))
         .layer(SetSensitiveRequestHeadersLayer::new([
             axum::http::header::AUTHORIZATION,
@@ -1630,6 +1707,73 @@ mod tests {
     #[test]
     fn default_model_tracks_gemini_3_6_flash() {
         assert_eq!(DEFAULT_GEMINI_MODEL, "gemini-3.6-flash");
+    }
+
+    #[test]
+    fn request_envelope_bounds_headers_deadline_and_encoding() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(request_duration(&headers).unwrap(), MAX_REQUEST_DURATION);
+        headers.insert(REQUEST_DEADLINE_HEADER, HeaderValue::from_static("25"));
+        assert_eq!(request_duration(&headers).unwrap(), Duration::from_millis(25));
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert!(!request_encoding_supported(&headers));
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("identity"));
+        assert!(request_encoding_supported(&headers));
+
+        let oversized = "x".repeat(MAX_REQUEST_HEADER_BYTES + 1);
+        let mut oversized_headers = HeaderMap::new();
+        oversized_headers.insert(
+            HeaderName::from_static("x-oversized"),
+            HeaderValue::from_str(&oversized).unwrap(),
+        );
+        assert!(!request_headers_within_budget(&oversized_headers));
+    }
+
+    #[tokio::test]
+    async fn request_deadline_cancels_synchronous_handler_work() {
+        use axum::routing::get;
+        use tokio::time::sleep;
+
+        let app = Router::new()
+            .route(
+                "/slow",
+                get(|| async {
+                    sleep(Duration::from_millis(100)).await;
+                    StatusCode::OK
+                }),
+            )
+            .layer(middleware::from_fn(enforce_request_envelope));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/slow")
+                    .header(REQUEST_DEADLINE_HEADER, "5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn encoded_request_bodies_fail_before_handler_execution() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/quotes")
+                    .header("content-type", "application/json")
+                    .header("content-encoding", "gzip")
+                    .header("x-canonical-internal-token", TOKEN)
+                    .header("x-canonical-subject", "user-123")
+                    .header("idempotency-key", "quote:compressed")
+                    .body(Body::from("not-actually-gzip"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[tokio::test]
