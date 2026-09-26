@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::fs;
 use std::io::Write as _;
+use std::path::Path;
 
 #[cfg(not(test))]
 use std::sync::OnceLock;
@@ -11,6 +13,7 @@ use flags2env::BundledFlags2Env;
 use tempfile::NamedTempFile;
 
 const CONTRACT: &str = include_str!("../.cli-flags.toml");
+const MAX_CONFIG_PROJECTION_BYTES: u64 = 64 * 1024;
 
 #[cfg(not(test))]
 static RESOLVED: OnceLock<Result<BTreeMap<String, String>, String>> = OnceLock::new();
@@ -132,7 +135,21 @@ fn resolve_from(
         ));
     }
 
+    let selected_config = parsed
+        .provided_flags
+        .get("CANONICAL_CONFIG")
+        .or_else(|| environment.get("CANONICAL_CONFIG"))
+        .cloned();
+    let config_projection = match selected_config.as_deref() {
+        Some(path) => load_config_projection(Path::new(path))?,
+        None => BTreeMap::new(),
+    };
+
+    // Highest to lowest precedence is:
+    // CLI flags > process environment > encrypted config projection > defaults.
+    // flags-2-env applies audited contract defaults during typed coercion below.
     let mut raw = parsed.dotenv;
+    raw.extend(config_projection);
     raw.extend(
         environment
             .iter()
@@ -151,6 +168,80 @@ fn resolve_from(
         }
     }
     Ok(resolved)
+}
+
+fn allowed_config_projection_keys() -> Result<BTreeSet<String>, String> {
+    let contract = CONTRACT
+        .parse::<toml::Value>()
+        .map_err(|error| format!("cannot parse embedded flags-2-env contract: {error}"))?;
+    let mut allowed = BTreeSet::new();
+    if let Some(flags) = contract.get("flags").and_then(toml::Value::as_table) {
+        for flag in flags.values() {
+            if let Some(env) = flag
+                .as_table()
+                .and_then(|flag| flag.get("env"))
+                .and_then(toml::Value::as_str)
+            {
+                allowed.insert(env.to_owned());
+            }
+        }
+    }
+    if let Some(ignored) = contract
+        .get("env")
+        .and_then(toml::Value::as_table)
+        .and_then(|env| env.get("ignore"))
+        .and_then(toml::Value::as_array)
+    {
+        for name in ignored.iter().filter_map(toml::Value::as_str) {
+            allowed.insert(name.to_owned());
+        }
+    }
+    // The selector itself is process/CLI-owned and must not recurse from inside
+    // the projection.
+    allowed.remove("CANONICAL_CONFIG");
+    Ok(allowed)
+}
+
+fn load_config_projection(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect config projection {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "config projection {} must be a regular non-symlink file",
+            path.display()
+        ));
+    }
+    if metadata.len() > MAX_CONFIG_PROJECTION_BYTES {
+        return Err(format!(
+            "config projection {} exceeds {} bytes",
+            path.display(),
+            MAX_CONFIG_PROJECTION_BYTES
+        ));
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read config projection {}: {error}", path.display()))?;
+    let table = text
+        .parse::<toml::Value>()
+        .map_err(|error| format!("cannot parse config projection {}: {error}", path.display()))?;
+    let table = table
+        .as_table()
+        .ok_or_else(|| "config projection root must be a flat TOML table".to_owned())?;
+    let allowed = allowed_config_projection_keys()?;
+    let mut output = BTreeMap::new();
+    for (name, value) in table {
+        if !allowed.contains(name) {
+            return Err(format!("unknown config projection field: {name}"));
+        }
+        let value = match value {
+            toml::Value::String(value) => value.clone(),
+            toml::Value::Integer(value) => value.to_string(),
+            toml::Value::Float(value) => value.to_string(),
+            toml::Value::Boolean(value) => value.to_string(),
+            _ => return Err(format!("config projection field {name} must be scalar")),
+        };
+        output.insert(name.clone(), value);
+    }
+    Ok(output)
 }
 
 fn scalar_string(name: &str, value: serde_json::Value) -> Result<String, String> {
@@ -234,6 +325,52 @@ mod tests {
         )
         .expect_err("unknown option");
         assert!(error.contains("--definitely-unknown"));
+        assert!(!error.contains("do-not-echo"));
+    }
+
+    #[test]
+    fn config_projection_overrides_contract_default_but_environment_overrides_projection() {
+        let mut config = NamedTempFile::new().expect("temp config");
+        writeln!(config, "GEMINI_MODEL = \"from-config\"").expect("write config");
+        let config_path = config.path().to_string_lossy().to_string();
+
+        let from_config = resolve_from(
+            &["server".to_owned()],
+            [("CANONICAL_CONFIG".to_owned(), config_path.clone())],
+        )
+        .expect("config projection");
+        assert_eq!(
+            from_config.get("GEMINI_MODEL").map(String::as_str),
+            Some("from-config")
+        );
+
+        let from_env = resolve_from(
+            &["server".to_owned()],
+            [
+                ("CANONICAL_CONFIG".to_owned(), config_path),
+                ("GEMINI_MODEL".to_owned(), "from-env".to_owned()),
+            ],
+        )
+        .expect("environment precedence");
+        assert_eq!(
+            from_env.get("GEMINI_MODEL").map(String::as_str),
+            Some("from-env")
+        );
+    }
+
+    #[test]
+    fn config_projection_rejects_unknown_fields_without_echoing_values() {
+        let mut config = NamedTempFile::new().expect("temp config");
+        writeln!(config, "CANONICAL_ADMIN_PASSWORD = \"do-not-echo\"").expect("write config");
+        let error = resolve_from(
+            &["server".to_owned()],
+            [(
+                "CANONICAL_CONFIG".to_owned(),
+                config.path().to_string_lossy().to_string(),
+            )],
+        )
+        .expect_err("unknown config field");
+        assert!(error.contains("CANONICAL_ADMIN_PASSWORD"));
         assert!(!error.contains("do-not-echo"));
     }
 
