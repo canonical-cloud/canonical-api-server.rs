@@ -1595,8 +1595,9 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_router, parse_quote_request, AppState, QuoteAdmission, APPLICATION_CONTEXT_MARKDOWN,
-        DEFAULT_GEMINI_MODEL, MAX_REQUEST_BODY_BYTES, QUOTE_SUBMISSIONS_PER_WINDOW,
+        build_router, parse_quote_request, validate_process_role_credentials, AppState, ConfigError,
+        QuoteAdmission, APPLICATION_CONTEXT_MARKDOWN, DEFAULT_GEMINI_MODEL,
+        FORBIDDEN_API_PROCESS_CREDENTIALS, MAX_REQUEST_BODY_BYTES, QUOTE_SUBMISSIONS_PER_WINDOW,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
