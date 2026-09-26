@@ -1672,12 +1672,15 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_router, parse_quote_request, validate_process_role_credentials, AppState, ConfigError,
-        QuoteAdmission, APPLICATION_CONTEXT_MARKDOWN, DEFAULT_GEMINI_MODEL,
-        FORBIDDEN_API_PROCESS_CREDENTIALS, MAX_REQUEST_BODY_BYTES, QUOTE_SUBMISSIONS_PER_WINDOW,
+        build_router, enforce_request_envelope, parse_quote_request, request_duration,
+        request_encoding_supported, request_headers_within_budget, validate_process_role_credentials,
+        AppState, ConfigError, QuoteAdmission, APPLICATION_CONTEXT_MARKDOWN, DEFAULT_GEMINI_MODEL,
+        FORBIDDEN_API_PROCESS_CREDENTIALS, MAX_REQUEST_BODY_BYTES, MAX_REQUEST_DURATION,
+        MAX_REQUEST_HEADER_BYTES, QUOTE_SUBMISSIONS_PER_WINDOW, REQUEST_DEADLINE_HEADER,
     };
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use std::time::Duration;
+    use axum::{body::Body, middleware, Router};
+    use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use shared_auth_client::{ClientError, SharedAuthClient};
