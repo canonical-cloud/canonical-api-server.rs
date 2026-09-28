@@ -1,0 +1,14 @@
+name: formal / bounded state model
+on: {pull_request: {}, workflow_dispatch: {}}
+permissions: {contents: read}
+jobs:
+  bounded-model:
+    runs-on: ubuntu-latest
+    env: {MODEL: api-command, INITIAL: accepted, TERMINAL: 'succeeded,failed,cancelled', EDGES: 'accepted|begin|executing;accepted|cancel|cancelled;executing|succeed|succeeded;executing|fail|failed;executing|cancel|cancelled'}
+    steps:
+      - name: Exhaustively check state-machine invariants
+        shell: bash
+        run: |
+          node <<'NODE'
+          const E=process.env.EDGES.split(';').map(x=>{const[f,e,t]=x.split('|');return{f,e,t}}),T=new Set(process.env.TERMINAL.split(',')),A=[...new Set(E.map(x=>x.e))],K=s=>JSON.stringify([s.p,s.v,s.id,s.e,s.n]),S=(a,b)=>K(a)===K(b),I=(q,m,c)=>{if(!q)throw Error(m+'\n'+JSON.stringify(c))};function X(s,c){const b={...s};if(c.id===s.id)return c.e===s.e?{a:1,r:1,b,n:{...s},c}:{a:0,r:0,b,n:{...s},c};if(c.v!==s.v||T.has(s.p))return{a:0,r:0,b,n:{...s},c};const z=E.find(z=>z.f===s.p&&z.e===c.e);if(!z)return{a:0,r:0,b,n:{...s},c};return{a:1,r:0,b,n:{p:z.t,v:s.v+1,id:c.id,e:c.e,n:s.n+(T.has(z.t)?1:0)},c}}function C(t){I(t.n.v>=t.b.v,'version regressed',t);I(t.n.n<=1,'multiple terminal outcomes',t);if(t.a&&!t.r)I(t.n.v===t.b.v+1,'accepted mutation must advance one version',t);else I(S(t.b,t.n),'rejected/replayed command changed state',t);if(T.has(t.b.p))I(!t.a||t.r,'terminal state mutated',t)}const s0={p:process.env.INITIAL,v:0,id:null,e:null,n:0},q=[s0],seen=new Map([[K(s0),s0]]);let i=0,n=0;while(i<q.length){const s=q[i++];I(s.n===(T.has(s.p)?1:0),'terminal accounting mismatch',s);const cs=[];for(const e of A)cs.push({id:e+':'+s.v,e,v:s.v},{id:'old:'+e+':'+s.v,e,v:s.v-1});if(s.id)cs.push({id:s.id,e:s.e,v:s.v},{id:s.id,e:A.find(e=>e!==s.e)||s.e,v:s.v});for(const c of cs){const t=X(s,c);n++;C(t);if(t.a&&!t.r&&!seen.has(K(t.n))){seen.set(K(t.n),t.n);q.push(t.n)}}}console.log(JSON.stringify({model:process.env.MODEL,claim:'finite-exhaustive-lifecycle-abstraction',states:seen.size,transitions:n}));
+          NODE
