@@ -1,0 +1,32 @@
+{
+  "schema": "ores.stack.lifecycle-request-policy/v1",
+  "readiness": {
+    "livenessPath": "/healthz",
+    "readinessPath": "/readyz",
+    "livenessDependencyFree": true,
+    "readinessRequiresDatabaseRoleSchemaAndGrantAdmission": true,
+    "dependencyOutageExpected": "readyz=503 while healthz remains process-local"
+  },
+  "draining": {
+    "listenerClosesOnFirstSignal": true,
+    "existingWorkGraceMsSource": "SHUTDOWN_GRACE_MS",
+    "defaultGraceMs": 30000,
+    "secondSignalForces": true,
+    "deadlineForces": true
+  },
+  "requestDeadline": {
+    "header": "x-ores-deadline-ms",
+    "maximumMs": 90000,
+    "scope": "synchronous request future",
+    "propagation": "stored in request extensions and enforced with timeout_at around the handler future",
+    "detachedAcceptedWork": "not request-scoped; must be governed by the explicit background-execution contract"
+  },
+  "requestBuffering": {
+    "bodyBytes": 65536,
+    "headerBytes": 32768,
+    "headerCount": 100,
+    "requestContentEncoding": ["identity"],
+    "compressedRequestBodies": "reject-before-handler",
+    "uploadPolicy": "same body byte budget as all other request bodies"
+  }
+}
