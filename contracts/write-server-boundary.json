@@ -1,0 +1,40 @@
+{
+  "schema": "ores.stack.write-server-boundary/v1",
+  "role": "api-write",
+  "mutations": [
+    {
+      "operation": "quote.create",
+      "route": "POST /api/v1/quotes",
+      "authentication": "trusted-proxy subject or independently introspected bearer with quotes:write",
+      "tenantAuthorization": "subject is derived only from authenticated identity and scopes persistence ownership",
+      "validation": "strict QuoteRequest normalization before persistence",
+      "idempotency": "required Idempotency-Key bound to subject, operation, and normalized payload"
+    },
+    {
+      "operation": "quote.retry",
+      "route": "POST /api/v1/quotes/{quote_id}/retry",
+      "authentication": "trusted-proxy subject or independently introspected bearer with quotes:write",
+      "tenantAuthorization": "quote lookup is owner-scoped to authenticated subject",
+      "validation": "only failed quotes may transition back to queued",
+      "idempotency": "required Idempotency-Key bound to subject and quote id"
+    },
+    {
+      "operation": "readiness.assessment.create",
+      "route": "POST /api/v1/readiness/assessments",
+      "authentication": "authenticated trusted-proxy subject or independently introspected bearer",
+      "tenantAuthorization": "record owner is derived only from authenticated subject",
+      "validation": "framework ids and bounded intake fields are validated before insert",
+      "idempotency": "required Idempotency-Key bound to subject and normalized assessment payload"
+    }
+  ],
+  "proofs": [
+    "quote_creation_requires_trusted_proxy_headers",
+    "direct_bearer_is_independently_introspected_for_the_api_audience",
+    "quote_mutation_requires_idempotency_key",
+    "quote_mutation_rejects_untrusted_tenant_subject",
+    "create_idempotency_replays_and_rejects_payload_reuse",
+    "readiness_assessments_reject_unknown_framework_ids",
+    "readiness_assessments_require_authentication",
+    "readiness_assessments_are_isolated_between_subjects"
+  ]
+}

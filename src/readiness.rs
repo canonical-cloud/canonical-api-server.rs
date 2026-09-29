@@ -419,7 +419,15 @@ fn not_ready(code: &'static str, message: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::READINESS_SQL;
+    use axum::http::StatusCode;
+
+    use super::{readiness, READINESS_SQL};
+
+    #[tokio::test]
+    async fn dependency_outage_removes_readiness_without_restarting_the_process() {
+        let response = readiness(None).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 
     #[test]
     fn readiness_contract_names_every_security_boundary() {
