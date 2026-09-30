@@ -40,7 +40,7 @@ spec:
             - name: SHUTDOWN_GRACE_MS
               value: "30000"
             - name: GEMINI_MODEL
-              value: gemini-3.1-pro-preview
+              value: gemini-3.6-flash
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
