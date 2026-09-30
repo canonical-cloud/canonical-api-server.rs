@@ -3,8 +3,6 @@ use serde::Serialize;
 
 use canonical_api_server::AppState;
 
-const CONTRACT: &str = "canonical-cloud/grc-platform/v1";
-
 #[derive(Clone, Copy, Debug, Serialize)]
 struct GrcCapabilityDescriptor {
     key: &'static str,
@@ -18,7 +16,6 @@ struct GrcCapabilityDescriptor {
 
 #[derive(Debug, Serialize)]
 struct GrcCapabilityCatalog {
-    contract: &'static str,
     schema_version: u8,
     capabilities: &'static [GrcCapabilityDescriptor],
 }
@@ -201,7 +198,6 @@ pub fn router() -> Router<AppState> {
 
 async fn capabilities() -> Json<GrcCapabilityCatalog> {
     Json(GrcCapabilityCatalog {
-        contract: CONTRACT,
         schema_version: 1,
         capabilities: CAPABILITIES,
     })
@@ -211,11 +207,10 @@ async fn capabilities() -> Json<GrcCapabilityCatalog> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{CAPABILITIES, CONTRACT};
+    use super::CAPABILITIES;
 
     #[test]
     fn capability_catalog_is_complete_bounded_and_non_generic() {
-        assert_eq!(CONTRACT, "canonical-cloud/grc-platform/v1");
         assert_eq!(CAPABILITIES.len(), 13);
 
         let keys = CAPABILITIES
