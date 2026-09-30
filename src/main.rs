@@ -119,3 +119,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn dependency_outage_removes_readiness_without_restarting_the_process() {
+        let response = crate::readiness::router(None)
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .expect("valid readiness request"),
+            )
+            .await
+            .expect("readiness router must answer");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
