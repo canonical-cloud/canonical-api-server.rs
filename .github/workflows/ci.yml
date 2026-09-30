@@ -79,13 +79,19 @@ jobs:
           PY
           cargo metadata --locked --format-version 1 --no-deps >/dev/null
 
-      # rustfmt itself needs no dependency checkout. The repository currently
-      # has two unrelated base-tree formatting findings, so check the Rust file
-      # this PR actually changes before private credentials are required. The
-      # full workspace format gate remains below after the locked graph is
-      # available; this early check is additive, not a waiver.
+      # These checks deliberately run before private dependency access so
+      # deployment/readiness changes receive executable exact-head evidence even
+      # when the private Cargo credential is unavailable. The full workspace
+      # format/test/clippy gates remain below and are not waived.
       - name: Check touched Rust formatting before private dependency access
-        run: rustfmt --edition 2021 --check src/telemetry.rs
+        run: rustfmt --edition 2021 --check src/readiness.rs tests/deploy_runtime_contract.rs
+
+      - name: Run dependency-free deploy/runtime contract before private dependency access
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test tests/deploy_runtime_contract.rs -o /tmp/deploy-runtime-contract
+          /tmp/deploy-runtime-contract
 
       - name: Fetch locked private dependencies with least privilege
         env:
