@@ -4,6 +4,7 @@ permissions: {contents: read}
 jobs:
   bounded-model:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env: {MODEL: api-command, INITIAL: accepted, TERMINAL: 'succeeded,failed,cancelled', EDGES: 'accepted|begin|executing;accepted|cancel|cancelled;executing|succeed|succeeded;executing|fail|failed;executing|cancel|cancelled'}
     steps:
       - name: Exhaustively check state-machine invariants
