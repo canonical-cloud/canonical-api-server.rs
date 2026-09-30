@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod grc;
 mod readiness;
 mod readiness_observation_ingest;
 mod rpc_routes;
@@ -84,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let app = build_router(state.clone())
+        .merge(grc::router())
         .merge(rpc_routes::router(state))
         .merge(readiness::router(readiness_database))
         .merge(readiness_observation_ingest::router(observation_service));
