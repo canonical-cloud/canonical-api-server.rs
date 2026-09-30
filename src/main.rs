@@ -12,7 +12,8 @@ use std::{io, time::Duration};
 use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
-use canonical_lib::{audit_data::table, interfaces::QuoteRequest};
+use canonical_lib::audit_data::table;
+use canonical_lib::interfaces::QuoteRequest;
 use canonical_orm_core::{CapabilityProfile, DualOrmContext};
 use sea_orm::Database;
 use shared_auth_client::SharedAuthClient;
