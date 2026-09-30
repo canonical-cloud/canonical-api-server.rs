@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod grc;
 mod readiness;
 mod readiness_observation_ingest;
 mod rpc_routes;
@@ -11,7 +12,8 @@ use std::{io, time::Duration};
 use canonical_api_server::{
     build_router, AppState, Config, GeminiClient, WebhookDispatcher, SHARED_AUTH_MAX_RESPONSE_BYTES,
 };
-use canonical_lib::{audit_data::table, interfaces::QuoteRequest};
+use canonical_lib::audit_data::table;
+use canonical_lib::interfaces::QuoteRequest;
 use canonical_orm_core::{CapabilityProfile, DualOrmContext};
 use sea_orm::Database;
 use shared_auth_client::SharedAuthClient;
@@ -84,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let app = build_router(state.clone())
+        .merge(grc::router())
         .merge(rpc_routes::router(state))
         .merge(readiness::router(readiness_database))
         .merge(readiness_observation_ingest::router(observation_service));

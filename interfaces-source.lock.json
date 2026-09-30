@@ -6,7 +6,7 @@
   "cargo_bridge": {
     "package": "canonical-lib",
     "git": "https://github.com/canonical-cloud/canonical-lib-core",
-    "revision": "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"
+    "revision": "54ce24670694b1f920e4ab69043378db24fd7296"
   },
   "rust_entrypoint": "generated/rust/src/lib.rs",
   "consumers": {
