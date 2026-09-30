@@ -27,7 +27,8 @@ fn kubernetes_supplies_required_runtime_auth_secret_and_rejects_retired_envs() {
 fn kubernetes_readiness_route_is_real_and_database_backed() {
     assert!(MAIN.contains(".merge(readiness::router(readiness_database))"));
     assert!(DEPLOY.contains("path: /readyz"));
-    assert!(READINESS.contains("PostgreSQL is required before the Canonical quote API can receive traffic"));
+    assert!(READINESS
+        .contains("PostgreSQL is required before the Canonical quote API can receive traffic"));
     assert!(READINESS.contains("rolbypassrls"));
     assert!(READINESS.contains("relation.oid IS NULL"));
     assert!(READINESS.contains("constraint_row.convalidated"));
