@@ -50,9 +50,32 @@ jobs:
           components: rustfmt, clippy
       - name: Verify Zed, Cargo, lock, and source parity
         run: python3 scripts/verify_interface_contract.py
-      - name: Run the Zed pre-build contract
+
+      - name: Fetch locked private dependencies with least privilege
+        env:
+          CANONICAL_LIB_READ_TOKEN: ${{ secrets.CANONICAL_LIB_READ_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.CANONICAL_LIB_READ_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$CANONICAL_LIB_READ_TOKEN" ]; then
+            echo "CANONICAL_LIB_READ_TOKEN must grant read-only access to Canonical private Rust dependencies" >&2
+            exit 1
+          fi
+          cargo fetch --locked
+
+      - name: Run the Zed pre-build contract from the fetched graph
+        env:
+          CARGO_NET_OFFLINE: "true"
         run: sh ./.zpkg/pre-build
       - name: Prove the API contract and generated request type compile together
-        run: cargo test --all-targets --all-features --locked contract
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo test --offline --all-targets --all-features --locked contract
       - name: Lint the direct interface integration
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo clippy --offline --all-targets --all-features --locked -- -D warnings
