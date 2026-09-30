@@ -84,7 +84,7 @@ jobs:
       # when the private Cargo credential is unavailable. The full workspace
       # format/test/clippy gates remain below and are not waived.
       - name: Check touched Rust formatting before private dependency access
-        run: rustfmt --edition 2021 --check src/readiness.rs tests/deploy_runtime_contract.rs
+        run: rustfmt --edition 2021 --check src/main.rs src/readiness.rs tests/deploy_runtime_contract.rs
 
       - name: Run dependency-free deploy/runtime contract before private dependency access
         shell: bash
