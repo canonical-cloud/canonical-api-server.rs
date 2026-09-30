@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 const DEPLOY: &str = include_str!("../deploy/k8s/all.yaml");
+const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const MAIN: &str = include_str!("../src/main.rs");
 const READINESS: &str = include_str!("../src/readiness.rs");
 const FLAGS: &str = include_str!("../.cli-flags.toml");
@@ -29,6 +30,13 @@ fn kubernetes_supplies_required_runtime_auth_secret_and_rejects_retired_envs() {
     assert!(DEPLOY.contains("key: CANONICAL_INTERNAL_AUTH_TOKEN"));
     assert!(!DEPLOY.contains("QUOTE_CONTEXT_MARKDOWN_PATH"));
     assert!(!DEPLOY.contains("ORIGIN_ASSERTION_SECRET"));
+}
+
+#[test]
+fn kubernetes_pins_the_operator_approved_gemini_model() {
+    assert!(ENV_EXAMPLE.contains("GEMINI_MODEL=gemini-3.6-flash"));
+    assert!(DEPLOY.contains("- name: GEMINI_MODEL\n              value: gemini-3.6-flash"));
+    assert!(!DEPLOY.contains("gemini-3.1-pro-preview"));
 }
 
 #[test]
