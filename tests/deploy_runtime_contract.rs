@@ -5,6 +5,14 @@ const MAIN: &str = include_str!("../src/main.rs");
 const READINESS: &str = include_str!("../src/readiness.rs");
 const FLAGS: &str = include_str!("../.cli-flags.toml");
 
+fn readiness_sql() -> &'static str {
+    READINESS
+        .split_once("const READINESS_SQL: &str = r#\"")
+        .and_then(|(_, remainder)| remainder.split_once("\"#;"))
+        .map(|(sql, _)| sql)
+        .expect("src/readiness.rs must contain the READINESS_SQL raw string")
+}
+
 #[test]
 fn kubernetes_listener_matches_runtime_flag_contract() {
     assert!(FLAGS.contains("env = \"BIND_ADDRESS\""));
@@ -25,16 +33,17 @@ fn kubernetes_supplies_required_runtime_auth_secret_and_rejects_retired_envs() {
 
 #[test]
 fn kubernetes_readiness_route_is_real_and_database_backed() {
+    let sql = readiness_sql();
     assert!(MAIN.contains(".merge(readiness::router(readiness_database))"));
     assert!(DEPLOY.contains("path: /readyz"));
     assert!(READINESS
         .contains("PostgreSQL is required before the Canonical quote API can receive traffic"));
-    assert!(READINESS.contains("rolbypassrls"));
-    assert!(READINESS.contains("relation.oid IS NULL"));
-    assert!(READINESS.contains("constraint_row.convalidated"));
-    assert!(!READINESS.contains("count(*) = 7"));
-    assert!(!READINESS.contains("count(*) = 6"));
-    assert!(!READINESS.contains("count(*) = 32"));
+    assert!(sql.contains("rolbypassrls"));
+    assert!(sql.contains("relation.oid IS NULL"));
+    assert!(sql.contains("constraint_row.convalidated"));
+    assert!(!sql.contains("count(*) = 7"));
+    assert!(!sql.contains("count(*) = 6"));
+    assert!(!sql.contains("count(*) = 32"));
 }
 
 #[test]
