@@ -327,7 +327,6 @@ LIMIT 500
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TenantIdentity {
-    subject: String,
     tenant_id: Uuid,
 }
 
@@ -469,10 +468,8 @@ async fn authenticate_tenant(
             .and_then(|value| value.to_str().ok())
             .and_then(parse_tenant_id)
             .ok_or_else(unauthorized)?;
-        return Ok(TenantIdentity {
-            subject: subject.to_owned(),
-            tenant_id,
-        });
+        let _ = subject;
+        return Ok(TenantIdentity { tenant_id });
     }
 
     let bearer = headers
@@ -504,18 +501,14 @@ async fn authenticate_tenant(
         .and_then(parse_tenant_id)
         .ok_or_else(unauthorized)?;
 
-    Ok(TenantIdentity {
-        subject: subject.to_owned(),
-        tenant_id,
-    })
+    let _ = subject;
+    Ok(TenantIdentity { tenant_id })
 }
 
 fn parse_tenant_id(value: &str) -> Option<Uuid> {
     let value = value.trim();
-    if value != value.to_ascii_lowercase() {
-        return None;
-    }
-    Uuid::parse_str(value).ok()
+    let parsed = Uuid::parse_str(value).ok()?;
+    (parsed.to_string() == value).then_some(parsed)
 }
 
 fn unauthorized() -> ApiError {
