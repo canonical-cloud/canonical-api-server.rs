@@ -49,7 +49,7 @@ def main() -> None:
     dpm_revision = "d05a7880987ddaa271fa88b52c787390ef12b899"
     canonical_lib_revision = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"
     canonical_interfaces_revision = "0cab33c2b2a494d2368ef1da0ebe5d614b3a96ef"
-    shared_auth_revision = "cc57a85b276bee81ad94decc87df2f48d49cab9f"
+    shared_auth_revision = "0b6ceb78a632ec4501dd2d7dca155d91de0e2d89"
     ores_logging_revision = "ca176fb6768a9750d262a536952268625ffd3a8a"
 
     assert namespace["namespaceId"] == "canonical_cloud__quote"
