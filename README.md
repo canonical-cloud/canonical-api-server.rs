@@ -225,7 +225,7 @@ The service credential is sent only to Shared Auth; it is never forwarded to a
 product caller, placed in a request body, logged, or used as the end-user token.
 
 The official Shared Auth Rust client is consumed directly from immutable commit
-`cc57a85b276bee81ad94decc87df2f48d49cab9f`. Protected introspection sends the
+`0b6ceb78a632ec4501dd2d7dca155d91de0e2d89`. Protected introspection sends the
 strict `IntrospectionRequest` envelope with the exact API audience and either
 `quotes:read` or `quotes:write`. The independent service credential is required
 before token constraints are parsed, responses are capped at 64 KiB, redirects
