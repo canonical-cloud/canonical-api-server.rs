@@ -2,6 +2,7 @@
 
 mod contract;
 pub mod flags;
+mod grc_work_queue;
 mod frameworks;
 mod gemini;
 mod persistence;
@@ -569,6 +570,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/readiness/assessments/{assessment_id}",
             get(get_readiness_assessment),
         )
+        .merge(grc_work_queue::router())
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn(enforce_request_envelope))
