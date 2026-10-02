@@ -18,6 +18,8 @@ url = "https://github.com/canonical-cloud/canonical-api-server.rs"
 "canonical-cloud/canonical-interfaces" = "^0.1.0"
 "canonical-cloud/canonical-lib-core" = "^0.2.0"
 "oresoftware/next-loggers" = "=0.1.0"
+"oresoftware/ores-stack" = "^0.1.0"
+"oresoftware/typespec-json-schema-validator" = "^0.1.0"
 "shared-auth/shared-auth-clients" = "=0.1.0"
 
 [build]
@@ -36,8 +38,18 @@ exclude = [".env", ".env.*", ".direnv/**", ".vendor/.zed/**", ".zed/**", ".zed-p
 adapter = "none"
 dir = ".vendor/.zed"
 
+[targets.contracts]
+dir = "contracts"
+name = "canonical-api-server-contracts"
+adapter = "none"
+
+[targets.conformance]
+dir = "conformance"
+name = "canonical-api-server-conformance"
+adapter = "none"
+
 [scripts]
 verify_interfaces = "python3 scripts/verify_interface_contract.py"
 prebuild = "sh ./.zpkg/pre-build"
 prepublish = "sh ./.zpkg/pre-publish"
-test = "cargo fmt --all -- --check && cargo test --all-targets --all-features --locked && cargo clippy --all-targets --all-features --locked -- -D warnings"
+test = "sh conformance/check-routing-contracts.sh --full"

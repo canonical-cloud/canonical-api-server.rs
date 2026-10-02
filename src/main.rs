@@ -3,6 +3,7 @@
 mod grc;
 mod readiness;
 mod readiness_observation_ingest;
+#[path = "routes/mod.rs"]
 mod rpc_routes;
 mod shutdown;
 mod telemetry;

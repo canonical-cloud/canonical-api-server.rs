@@ -28,7 +28,7 @@ pub(crate) mod find_users {
         Router::new().route("/v1/find-users", axum_post(post))
     }
 
-    #[ores_route(operation = handlers::find_users)]
+    #[ores_route(operation = handlers::find_users, path = "/v1/find-users")]
     pub async fn post(
         State(state): State<AppState>,
         headers: HeaderMap,
@@ -82,7 +82,10 @@ pub(crate) mod find_user_by_id {
         Router::new().route("/v1/find-user-by-id", axum_post(post))
     }
 
-    #[ores_route(operation = handlers::find_user_by_id)]
+    #[ores_route(
+        operation = handlers::find_user_by_id,
+        path = "/v1/find-user-by-id"
+    )]
     pub async fn post(
         State(state): State<AppState>,
         headers: HeaderMap,
