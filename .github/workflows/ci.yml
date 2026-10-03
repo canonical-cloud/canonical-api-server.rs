@@ -124,7 +124,7 @@ jobs:
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
           dependencies = manifest["dependencies"]
-          assert dependencies["shared-auth-client"]["rev"] == "cc57a85b276bee81ad94decc87df2f48d49cab9f"
+          assert dependencies["shared-auth-client"]["rev"] == "0b6ceb78a632ec4501dd2d7dca155d91de0e2d89"
           assert dependencies["next-loggers"]["rev"] == "ca176fb6768a9750d262a536952268625ffd3a8a"
           assert dependencies["canonical-lib"]["git"].endswith("/canonical-lib-core")
           PY
