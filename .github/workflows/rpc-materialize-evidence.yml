@@ -3,7 +3,14 @@ name: RPC source materialization
 on:
   push:
     branches:
-      - DEN-4078-shared-operation-rpc
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "contracts/rpc/version/**"
+      - "src/**"
+      - ".github/workflows/rpc-materialize-evidence.yml"
+  pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -27,14 +34,14 @@ jobs:
       - name: Check out exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Verify exact clean source head
         shell: bash
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
