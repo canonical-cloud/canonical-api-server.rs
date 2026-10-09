@@ -23,7 +23,8 @@ mod tests {
             display_name: None,
             active: None,
         };
-        let observed = serde_json::to_value(&user).expect("actual source-derived Rust serialization");
+        let observed =
+            serde_json::to_value(&user).expect("actual source-derived Rust serialization");
         assert_eq!(observed, json!({"id": "user-123"}));
         for response in ["FindUsersResponse", "FindUserByIdResponse"] {
             let schema = authored_schema();
@@ -38,7 +39,11 @@ mod tests {
                     !item["required"].as_array().unwrap().contains(&json!(field)),
                     "{response} incorrectly requires optional {field}"
                 );
-                let kind = if field == "active" { "boolean" } else { "string" };
+                let kind = if field == "active" {
+                    "boolean"
+                } else {
+                    "string"
+                };
                 assert_eq!(item["properties"][field]["type"], json!(kind));
             }
         }
