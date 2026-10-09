@@ -1,0 +1,49 @@
+name: exact native RPC serializer contract proof
+
+on:
+  pull_request:
+    paths:
+      - "src/rpc_routes/user/handlers.rs"
+      - "contracts/rpc/version/**"
+      - "generated/rpc/server-operation-index.json"
+      - "conformance/rpc-wire-contract/**"
+      - ".github/workflows/rpc-wire-native-serializer.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/rpc_routes/user/handlers.rs"
+      - "contracts/rpc/version/**"
+      - "conformance/rpc-wire-contract/**"
+      - ".github/workflows/rpc-wire-native-serializer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-source-derived-serialization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exactly the reviewed head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Refuse mismatched source revision
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Format isolated source-derived production serializer proof
+        run: cargo fmt --manifest-path conformance/rpc-wire-contract/Cargo.toml -- --check
+      - name: Compile real Rust UserSummary and test optional wire semantics
+        run: cargo test --manifest-path conformance/rpc-wire-contract/Cargo.toml --all-targets
+      - name: Preserve all author-owned RPC authority inputs
+        run: git diff --exit-code -- src/rpc_routes/user/handlers.rs contracts/rpc/version/

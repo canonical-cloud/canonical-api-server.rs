@@ -3,7 +3,14 @@ name: RPC source materialization
 on:
   push:
     branches:
-      - DEN-4078-shared-operation-rpc
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "contracts/rpc/version/**"
+      - "src/**"
+      - ".github/workflows/rpc-materialize-evidence.yml"
+  pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -27,14 +34,14 @@ jobs:
       - name: Check out exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Verify exact clean source head
         shell: bash
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
@@ -45,10 +52,15 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Regenerate Cargo.lock from Cargo.toml
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-        run: cargo generate-lockfile
+      # Schema/Contract IR admission is independent of private Cargo dependency
+      # access. Lockfile resolution and runtime compilation remain separate gates.
+      - name: Retain committed Cargo dependency lock evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Cargo.toml
+          test -s Cargo.lock
+          git diff --exit-code -- Cargo.toml Cargo.lock
 
       - name: Generate admitted Contract IR and parity receipt
         uses: ORESoftware/typespec-json-schema-validator@bd503465dab8c5148fee722b443ed04ff126c9bf
@@ -68,7 +80,7 @@ jobs:
           typespec: contracts/rpc/version/main.tsp
           schema: contracts/rpc/version/authored.schema.json
           generated_schema: .typespec-json-schema-validator/generated/typespec.generated.schema.json
-          expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError","CanonicalCloud.Rpc.Version.UserLookupHeaders","CanonicalCloud.Rpc.Version.FindUsersResponse","CanonicalCloud.Rpc.Version.FindUserByIdRequest","CanonicalCloud.Rpc.Version.FindUserByIdResponse","CanonicalCloud.Rpc.Version.UserLookupError"]'
+          expected_declarations: '["CanonicalCloud.Rpc.Version.VersionResponse","CanonicalCloud.Rpc.Version.VersionError","CanonicalCloud.Rpc.Version.UserLookupHeaders","CanonicalCloud.Rpc.Version.FindUsersRequest","CanonicalCloud.Rpc.Version.FindUsersResponse","CanonicalCloud.Rpc.Version.FindUserByIdRequest","CanonicalCloud.Rpc.Version.FindUserByIdResponse","CanonicalCloud.Rpc.Version.UserLookupError"]'
 
       - name: Verify source authorities stayed immutable
         shell: bash
