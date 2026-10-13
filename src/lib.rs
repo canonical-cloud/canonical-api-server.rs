@@ -2153,6 +2153,65 @@ mod tests {
         assert!(conflict_body["requestId"].as_str().is_some());
     }
 
+    #[tokio::test]
+    async fn committed_create_replay_bypasses_exhausted_capacity_and_quota() {
+        let state = AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None);
+        let app = build_router(state.clone());
+        let key = "quote:replay-exhaustion-001";
+        let initial = app.clone().oneshot(request(valid_payload(), key)).await.unwrap();
+        assert_eq!(initial.status(), StatusCode::ACCEPTED);
+        let initial_body: Value = serde_json::from_slice(
+            &initial.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+
+        // A committed transport replay cannot require an available worker
+        // or a spare per-subject admission slot.
+        state.admission.analyses.close();
+        for _ in 1..super::QUOTE_SUBMISSIONS_PER_WINDOW {
+            state.admission.check_submission("user-123").unwrap();
+        }
+        assert!(state.admission.check_submission("user-123").is_err());
+        assert!(state.admission.reserve_analysis().is_err());
+
+        let replay = app.clone().oneshot(request(valid_payload(), key)).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::ACCEPTED);
+        let replay_body: Value = serde_json::from_slice(
+            &replay.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+        assert_eq!(replay_body["quoteId"], initial_body["quoteId"]);
+        assert!(state.admission.check_submission("user-123").is_err());
+
+        let mut mismatched = valid_payload();
+        mismatched["employeeCount"] = json!(888);
+        let conflict = app.clone().oneshot(request(mismatched, key)).await.unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let brand_new = app.oneshot(request(valid_payload(), "quote:new-work-blocked-01"))
+            .await.unwrap();
+        assert_eq!(brand_new.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn racing_same_key_create_is_single_operation_in_memory() {
+        let state = AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None);
+        let app = build_router(state.clone());
+        let first = app.clone().oneshot(request(valid_payload(), "quote:race-0001"));
+        let second = app.clone().oneshot(request(valid_payload(), "quote:race-0001"));
+        let (first, second) = tokio::join!(first, second);
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        assert_eq!(second.status(), StatusCode::ACCEPTED);
+        let a: Value = serde_json::from_slice(
+            &first.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+        let b: Value = serde_json::from_slice(
+            &second.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+        assert_eq!(a["quoteId"], b["quoteId"]);
+        assert_eq!(state.quotes.read().await.len(), 1);
+        assert_eq!(state.idempotency.read().await.len(), 1);
+    }
+
     fn assessment_request(subject: &str, payload: Value, key: &str) -> Request<Body> {
         Request::builder()
             .method("POST")
