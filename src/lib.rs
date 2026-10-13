@@ -652,6 +652,9 @@ async fn create_quote(
         if let Some(record) = persistence::replay_create_quote(
             database, &subject, &idempotency_key, &request_json,
         ).await.map_err(map_store_error)? {
+            // Match the ordinary Existing path: a replay committed by another
+            // API replica must refresh the local read/event cache as well.
+            state.quotes.write().await.insert(record.quote_id, record.clone());
             return Ok((StatusCode::ACCEPTED, Json(quote_submission_response(&record))));
         }
     } else {
@@ -788,6 +791,7 @@ async fn retry_quote(
         if let Some(record) = persistence::replay_retry_quote(
             database, &subject, quote_id, &idempotency_key,
         ).await.map_err(map_store_error)? {
+            state.quotes.write().await.insert(record.quote_id, record.clone());
             return Ok((StatusCode::ACCEPTED, Json(quote_retry_response(&record))));
         }
     } else {
