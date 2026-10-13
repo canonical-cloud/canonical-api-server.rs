@@ -60,6 +60,53 @@ pub enum RetryQuoteOutcome {
     },
 }
 
+/// Read-only RLS-scoped replay probe. A miss grants no authority to create:
+/// callers must obtain admission and the write transaction must recheck under
+/// its advisory lock. This preserves safety if another process races a miss.
+pub async fn replay_create_quote(
+    database: &DatabaseConnection,
+    subject: &str,
+    idempotency_key: &str,
+    request_json: &JsonValue,
+) -> Result<Option<QuoteRecord>, StoreError> {
+    let transaction = begin_subject_transaction(database, subject).await?;
+    let record = match find_operation(&transaction, subject, idempotency_key).await? {
+        Some(existing) => {
+            if existing.operation != "create" || existing.request_json.as_ref() != Some(request_json) {
+                transaction.rollback().await?;
+                return Err(StoreError::IdempotencyKeyReused);
+            }
+            Some(get_quote_in_transaction(&transaction, subject, existing.quote_id).await?)
+        }
+        None => None,
+    };
+    transaction.commit().await?;
+    Ok(record)
+}
+
+/// Fast path for an already committed retry. First-use retries must still pass
+/// normal admission and the transactionally locked persistence transition.
+pub async fn replay_retry_quote(
+    database: &DatabaseConnection,
+    subject: &str,
+    quote_id: Uuid,
+    idempotency_key: &str,
+) -> Result<Option<QuoteRecord>, StoreError> {
+    let transaction = begin_subject_transaction(database, subject).await?;
+    let record = match find_operation(&transaction, subject, idempotency_key).await? {
+        Some(existing) => {
+            if existing.operation != "retry" || existing.quote_id != quote_id {
+                transaction.rollback().await?;
+                return Err(StoreError::IdempotencyKeyReused);
+            }
+            Some(get_quote_in_transaction(&transaction, subject, quote_id).await?)
+        }
+        None => None,
+    };
+    transaction.commit().await?;
+    Ok(record)
+}
+
 pub async fn create_quote(
     database: &DatabaseConnection,
     subject: &str,

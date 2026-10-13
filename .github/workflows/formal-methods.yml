@@ -3,7 +3,8 @@ on: {pull_request: {}, workflow_dispatch: {}}
 permissions: {contents: read}
 jobs:
   bounded-model:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env: {MODEL: api-command, INITIAL: accepted, TERMINAL: 'succeeded,failed,cancelled', EDGES: 'accepted|begin|executing;accepted|cancel|cancelled;executing|succeed|succeeded;executing|fail|failed;executing|cancel|cancelled'}
     steps:
       - name: Exhaustively check state-machine invariants

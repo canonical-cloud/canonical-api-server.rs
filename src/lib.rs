@@ -33,7 +33,7 @@ use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use shared_auth_client::SharedAuthClient;
 use subtle::ConstantTimeEq;
-use tokio::sync::{broadcast, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{broadcast, Mutex as AsyncMutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -274,6 +274,9 @@ pub struct AppState {
     gemini: Option<GeminiClient>,
     gemini_model: Arc<str>,
     idempotency: Arc<RwLock<HashMap<(String, String), MemoryOperation>>>,
+    // In-memory testing mode only: serialize the replay probe with insertion
+    // so concurrent first-use requests cannot both accept the same key.
+    idempotency_gate: Arc<AsyncMutex<()>>,
     internal_auth_token: Arc<str>,
     next_event_sequence: Arc<AtomicU64>,
     quotes: Arc<RwLock<HashMap<Uuid, QuoteRecord>>>,
@@ -297,6 +300,7 @@ impl AppState {
             gemini: None,
             gemini_model: gemini_model.into(),
             idempotency: Arc::new(RwLock::new(HashMap::new())),
+            idempotency_gate: Arc::new(AsyncMutex::new(())),
             internal_auth_token: internal_auth_token.into(),
             next_event_sequence: Arc::new(AtomicU64::new(1)),
             quotes: Arc::new(RwLock::new(HashMap::new())),
@@ -634,6 +638,41 @@ async fn create_quote(
     let subject = authenticate(&headers, &state, &[SCOPE_QUOTES_WRITE]).await?;
     let idempotency_key = required_idempotency_key(&headers)?;
     let request = parse_quote_request(payload)?;
+    let request_json = serde_json::to_value(&request.wire).map_err(|_| {
+        ApiError::bad_request("invalid_request", "quote request could not be normalized")
+    })?;
+    // The global gate is only for the in-memory test implementation; SQL
+    // relies on its per-subject/key transactional advisory lock at write time.
+    let _memory_gate = if state.database.is_none() {
+        Some(state.idempotency_gate.lock().await)
+    } else {
+        None
+    };
+    if let Some(database) = state.database.as_ref() {
+        if let Some(record) = persistence::replay_create_quote(
+            database, &subject, &idempotency_key, &request_json,
+        ).await.map_err(map_store_error)? {
+            // Match the ordinary Existing path: a replay committed by another
+            // API replica must refresh the local read/event cache as well.
+            state.quotes.write().await.insert(record.quote_id, record.clone());
+            return Ok((StatusCode::ACCEPTED, Json(quote_submission_response(&record))));
+        }
+    } else {
+        let key = (subject.clone(), idempotency_key.clone());
+        let existing = { state.idempotency.read().await.get(&key).cloned() };
+        if let Some(existing) = existing {
+            let quote_id = match existing {
+                MemoryOperation::Create { quote_id, request_json: previous }
+                    if previous == request_json => quote_id,
+                _ => return Err(idempotency_reused()),
+            };
+            let record = state.quotes.read().await.get(&quote_id)
+                .cloned().ok_or_else(storage_unavailable)?;
+            return Ok((StatusCode::ACCEPTED, Json(quote_submission_response(&record))));
+        }
+    }
+    // A read-only miss is NOT admission. New work must obtain a permit and
+    // submission quota before the authoritative write path can enqueue it.
     let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
         ApiError::service_unavailable(
             "analysis_capacity_reached",
@@ -644,9 +683,6 @@ async fn create_quote(
         .admission
         .check_submission(&subject)
         .map_err(ApiError::rate_limited)?;
-    let request_json = serde_json::to_value(&request.wire).map_err(|_| {
-        ApiError::bad_request("invalid_request", "quote request could not be normalized")
-    })?;
 
     let (record, context, event, should_analyze) = if let Some(database) = state.database.as_ref() {
         let timestamp = now_rfc3339()?;
@@ -746,6 +782,31 @@ async fn retry_quote(
 ) -> Result<(StatusCode, Json<QuoteRetryResponse>), ApiError> {
     let subject = authenticate(&headers, &state, &[SCOPE_QUOTES_WRITE]).await?;
     let idempotency_key = required_idempotency_key(&headers)?;
+    let _memory_gate = if state.database.is_none() {
+        Some(state.idempotency_gate.lock().await)
+    } else {
+        None
+    };
+    if let Some(database) = state.database.as_ref() {
+        if let Some(record) = persistence::replay_retry_quote(
+            database, &subject, quote_id, &idempotency_key,
+        ).await.map_err(map_store_error)? {
+            state.quotes.write().await.insert(record.quote_id, record.clone());
+            return Ok((StatusCode::ACCEPTED, Json(quote_retry_response(&record))));
+        }
+    } else {
+        let key = (subject.clone(), idempotency_key.clone());
+        let existing = { state.idempotency.read().await.get(&key).cloned() };
+        if let Some(existing) = existing {
+            match existing {
+                MemoryOperation::Retry { quote_id: previous } if previous == quote_id => {
+                    let record = find_quote(&state, quote_id, &subject).await?;
+                    return Ok((StatusCode::ACCEPTED, Json(quote_retry_response(&record))));
+                }
+                _ => return Err(idempotency_reused()),
+            }
+        }
+    }
     let analysis_permit = state.admission.reserve_analysis().map_err(|_| {
         ApiError::service_unavailable(
             "analysis_capacity_reached",
@@ -2094,6 +2155,65 @@ mod tests {
                 .unwrap();
         assert_eq!(conflict_body["code"], "idempotency_key_reused");
         assert!(conflict_body["requestId"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn committed_create_replay_bypasses_exhausted_capacity_and_quota() {
+        let state = AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None);
+        let app = build_router(state.clone());
+        let key = "quote:replay-exhaustion-001";
+        let initial = app.clone().oneshot(request(valid_payload(), key)).await.unwrap();
+        assert_eq!(initial.status(), StatusCode::ACCEPTED);
+        let initial_body: Value = serde_json::from_slice(
+            &initial.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+
+        // A committed transport replay cannot require an available worker
+        // or a spare per-subject admission slot.
+        state.admission.analyses.close();
+        for _ in 1..super::QUOTE_SUBMISSIONS_PER_WINDOW {
+            state.admission.check_submission("user-123").unwrap();
+        }
+        assert!(state.admission.check_submission("user-123").is_err());
+        assert!(state.admission.reserve_analysis().is_err());
+
+        let replay = app.clone().oneshot(request(valid_payload(), key)).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::ACCEPTED);
+        let replay_body: Value = serde_json::from_slice(
+            &replay.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+        assert_eq!(replay_body["quoteId"], initial_body["quoteId"]);
+        assert!(state.admission.check_submission("user-123").is_err());
+
+        let mut mismatched = valid_payload();
+        mismatched["employeeCount"] = json!(888);
+        let conflict = app.clone().oneshot(request(mismatched, key)).await.unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let brand_new = app.oneshot(request(valid_payload(), "quote:new-work-blocked-01"))
+            .await.unwrap();
+        assert_eq!(brand_new.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn racing_same_key_create_is_single_operation_in_memory() {
+        let state = AppState::new(TOKEN, DEFAULT_GEMINI_MODEL, None);
+        let app = build_router(state.clone());
+        let first = app.clone().oneshot(request(valid_payload(), "quote:race-0001"));
+        let second = app.clone().oneshot(request(valid_payload(), "quote:race-0001"));
+        let (first, second) = tokio::join!(first, second);
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        assert_eq!(second.status(), StatusCode::ACCEPTED);
+        let a: Value = serde_json::from_slice(
+            &first.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+        let b: Value = serde_json::from_slice(
+            &second.into_body().collect().await.unwrap().to_bytes(),
+        ).unwrap();
+        assert_eq!(a["quoteId"], b["quoteId"]);
+        assert_eq!(state.quotes.read().await.len(), 1);
+        assert_eq!(state.idempotency.read().await.len(), 1);
     }
 
     fn assessment_request(subject: &str, payload: Value, key: &str) -> Request<Body> {
